@@ -1,0 +1,437 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Enums ---
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum LocationType {
+  SHOP
+  STORE
+}
+
+enum RequestType {
+  SHOP_TO_STORE
+  STORE_TO_OWNER
+  STORE_TO_STORE
+}
+
+enum RequestStatus {
+  PENDING
+  PARTIALLY_APPROVED
+  APPROVED
+  REJECTED
+  PARTIALLY_DISPATCHED
+  COMPLETED
+  CLOSED
+}
+
+enum RequestItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  DISPATCHED
+  STORED
+  RECEIVED
+}
+
+enum SaleType {
+  FULLY_PAID
+  PARTIALLY_PAID
+  CREDITED
+}
+
+enum PurchaseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CashEntryType {
+  INFLOW
+  OUTFLOW
+}
+
+// --- Roles & Permissions (RBAC) ---
+model Role {
+  id           Int              @id @default(autoincrement())
+  name         String           @unique
+  description  String?
+  isSystem     Boolean          @default(false)
+  permissions  RolePermission[]
+  users        User[]
+  notifications Notification[]
+  createdAt    DateTime         @default(now())
+}
+
+model Permission {
+  id    Int              @id @default(autoincrement())
+  key   String           @unique
+  label String
+  group String
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       Int
+  permissionId Int
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+// --- Users & Locations ---
+model User {
+  id         Int       @id @default(autoincrement())
+  email      String    @unique
+  password   String
+  name       String
+  phone      String?
+  roleId     Int?
+  role       Role?      @relation(fields: [roleId], references: [id])
+  status     UserStatus @default(ACTIVE)
+  locationId Int?
+  location   Location? @relation(fields: [locationId], references: [id])
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  auditLogs AuditLog[]
+  sales     Sale[]
+}
+
+model LocationCategory {
+  id        Int        @id @default(autoincrement())
+  name      String     @unique
+  locations Location[]
+}
+
+model Location {
+  id            Int            @id @default(autoincrement())
+  name          String // e.g., "Shop 1", "Main Cable Store"
+  type          LocationType
+  categoryId    Int?
+  category      LocationCategory? @relation(fields: [categoryId], references: [id])
+  inventory     Inventory[]
+  requestsFrom  StockRequest[] @relation("ShopRequests")
+  requestsTo    StockRequest[] @relation("StoreRequests")
+  sourceRequests StockRequest[] @relation("SourceStore")
+  sales         Sale[]
+  users         User[]
+  notifications Notification[]
+  customers     Customer[]
+  creditSales   CreditSale[]
+  purchases     Purchase[]
+  returns       Return[]
+  cashEntries   CashEntry[]
+}
+
+// --- Products & Categories ---
+model Category {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique // e.g., "Electrical Wire", "Bulb"
+  products Product[]
+}
+
+model Product {
+  id               Int            @id @default(autoincrement())
+  sku              String         @unique // Auto-generated unique code
+  brand            String
+  baseName         String
+  attributes       Json // e.g., {"watt": "12W", "type": "Spot"}
+  currentBuyPrice  Float
+  currentSellPrice Float
+  categoryId       Int
+  category         Category       @relation(fields: [categoryId], references: [id])
+  inventory        Inventory[]
+  requestItems     RequestItem[]
+  saleItems        SaleItem[]
+  priceHistory     PriceHistory[]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  notifications    Notification[]
+  creditSaleItems  CreditSaleItem[]
+  returnItems      ReturnItem[]
+  unitId           Int?
+  unit             Unit?            @relation(fields: [unitId], references: [id])
+}
+
+// --- Measuring Units ---
+model Unit {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique
+  products Product[]
+}
+
+model PriceHistory {
+  id           Int      @id @default(autoincrement())
+  productId    Int
+  product      Product  @relation(fields: [productId], references: [id])
+  oldBuyPrice  Float
+  newBuyPrice  Float
+  oldSellPrice Float
+  newSellPrice Float
+  updatedById  Int
+  updatedAt    DateTime @default(now())
+}
+
+// --- Inventory Tracking (Location Specific) ---
+model Inventory {
+  id         Int      @id @default(autoincrement())
+  productId  Int
+  product    Product  @relation(fields: [productId], references: [id])
+  locationId Int
+  location   Location @relation(fields: [locationId], references: [id])
+  quantity   Int      @default(0)
+
+  // Ensures one product per location
+  @@unique([productId, locationId])
+}
+
+// --- Stock Request Workflow ---
+model StockRequest {
+  id           Int           @id @default(autoincrement())
+  shopId       Int?
+  shop         Location?     @relation("ShopRequests", fields: [shopId], references: [id])
+  storeId      Int
+  store        Location      @relation("StoreRequests", fields: [storeId], references: [id])
+  fromStoreId  Int?
+  fromStore    Location?     @relation("SourceStore", fields: [fromStoreId], references: [id])
+  requestType  RequestType   @default(SHOP_TO_STORE)
+  status       RequestStatus @default(PENDING)
+  createdById  Int
+  approvedById Int?
+  items        RequestItem[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([storeId])
+  @@index([shopId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([requestType])
+  @@index([createdById])
+}
+
+model RequestItem {
+  id                 Int               @id @default(autoincrement())
+  requestId          Int
+  request            StockRequest      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  productId          Int
+  product            Product           @relation(fields: [productId], references: [id])
+  quantityRequested  Int?
+  quantityDispatched Int               @default(0)
+  quantityStored     Int               @default(0)
+  status             RequestItemStatus @default(PENDING)
+  confirmedById      Int?
+  confirmedAt        DateTime?
+
+  @@index([requestId])
+  @@index([productId])
+}
+
+// --- Sales & Profit Tracking ---
+model Sale {
+  id               Int           @id @default(autoincrement())
+  invoiceNumber    String        @unique
+  shopId           Int
+  shop             Location      @relation(fields: [shopId], references: [id])
+  totalAmount      Float
+  totalCost        Float
+  profit           Float
+  soldById         Int
+  soldBy           User          @relation(fields: [soldById], references: [id])
+  paidAmount       Float         @default(0)
+  remainingAmount  Float         @default(0)
+  saleType         SaleType      @default(FULLY_PAID)
+  paymentMethodId  Int?
+  paymentMethod    PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  customerId       Int?
+  customer         Customer?     @relation(fields: [customerId], references: [id])
+  notes            String?
+  saleDate         DateTime      @default(now())
+  items            SaleItem[]
+  creditSale       CreditSale?
+  returns          Return[]
+  purchaseId       Int?           @unique
+  purchase         Purchase?      @relation(fields: [purchaseId], references: [id])
+}
+
+model SaleItem {
+  id            Int     @id @default(autoincrement())
+  saleId        Int
+  sale          Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId     Int
+  product       Product @relation(fields: [productId], references: [id])
+  quantity      Int
+  unitSellPrice Float
+  unitBuyPrice  Float
+}
+
+// --- Returns & Refunds ---
+model Return {
+  id          Int          @id @default(autoincrement())
+  saleId      Int
+  sale        Sale         @relation(fields: [saleId], references: [id])
+  shopId      Int
+  shop        Location     @relation(fields: [shopId], references: [id])
+  totalRefund    Float
+  reason         String?
+  refundMethodId Int?
+  refundMethod   PaymentMethod? @relation(fields: [refundMethodId], references: [id])
+  createdById    Int
+  createdAt      DateTime     @default(now())
+  items          ReturnItem[]
+}
+
+model ReturnItem {
+  id        Int     @id @default(autoincrement())
+  returnId  Int
+  return    Return  @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  quantity     Int
+  unitPrice    Float
+  unitBuyPrice Float          @default(0)
+}
+
+// --- Payment Methods (dynamic, any role can add) ---
+model PaymentMethod {
+  id             Int              @id @default(autoincrement())
+  name           String           @unique
+  sales          Sale[]
+  creditPayments CreditPayment[]
+  purchases      Purchase[]
+  returns        Return[]
+}
+
+// --- Credit Customers ---
+model Customer {
+  id             Int             @id @default(autoincrement())
+  name           String
+  phone          String?
+  shopId         Int?
+  shop           Location?        @relation(fields: [shopId], references: [id])
+  createdAt      DateTime        @default(now())
+  sales          Sale[]
+  creditSales    CreditSale[]
+  creditPayments CreditPayment[]
+}
+
+// --- Credit Sales (item taken on credit) ---
+model CreditSale {
+  id          Int              @id @default(autoincrement())
+  customerId  Int
+  customer    Customer         @relation(fields: [customerId], references: [id])
+  saleId      Int?             @unique
+  sale        Sale?            @relation(fields: [saleId], references: [id])
+  shopId      Int
+  shop        Location         @relation(fields: [shopId], references: [id])
+  totalAmount Float
+  createdAt   DateTime         @default(now())
+  items       CreditSaleItem[]
+}
+
+model CreditSaleItem {
+  id           Int        @id @default(autoincrement())
+  creditSaleId Int
+  creditSale   CreditSale @relation(fields: [creditSaleId], references: [id], onDelete: Cascade)
+  productId    Int
+  product      Product    @relation(fields: [productId], references: [id])
+  quantity     Int
+  unitPrice    Float
+}
+
+// --- Credit Payments ---
+model CreditPayment {
+  id              Int            @id @default(autoincrement())
+  customerId      Int
+  customer        Customer       @relation(fields: [customerId], references: [id])
+  amount          Float
+  paymentMethodId Int?
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  paidAt          DateTime       @default(now())
+  notes           String?
+}
+
+model PushSubscription {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  action    String // e.g., "RESTOCK", "SALE", "DISPATCH", "APPROVE"
+  details   String // e.g., "Added 50x Bulbs to Main Store"
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+// --- Quick Purchases (Shopkeepers buy from external shops) ---
+model Purchase {
+  id              Int            @id @default(autoincrement())
+  shopId          Int
+  shop            Location       @relation(fields: [shopId], references: [id])
+  productName     String
+  quantity        Int
+  unitPrice       Float          // buying price per unit
+  sellPrice       Float          // expected sell price per unit
+  totalCost       Float          // unitPrice * quantity
+  revenue         Float          // sellPrice * quantity
+  profit          Float          // revenue - totalCost
+  status          PurchaseStatus @default(APPROVED)
+  createdById     Int
+  approvedById    Int?
+  paymentMethodId Int?
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  sale            Sale?
+  notes           String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+// --- Cash Ledger (daily cash movements) ---
+model CashEntry {
+  id          Int           @id @default(autoincrement())
+  shopId      Int
+  shop        Location      @relation(fields: [shopId], references: [id])
+  type        CashEntryType
+  amount      Float
+  source      String // 'SALE' | 'PURCHASE' | 'RETURN' | 'OPENING' | 'CREDIT_PAYMENT'
+  refId       Int?
+  description String?
+  createdById Int
+  createdAt   DateTime      @default(now())
+}
+
+// --- Notifications ---
+model Notification {
+  id               Int       @id @default(autoincrement())
+  type             String // e.g., "LOW_STOCK", "REQUEST_STATUS"
+  title            String
+  message          String
+  productId        Int?
+  product          Product?  @relation(fields: [productId], references: [id])
+  locationId       Int?
+  location         Location? @relation(fields: [locationId], references: [id])
+  targetRoleId     Int?
+  targetRole       Role?     @relation(fields: [targetRoleId], references: [id])
+  targetLocationId Int?
+  isRead           Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+}
