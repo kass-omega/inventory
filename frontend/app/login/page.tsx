@@ -34,6 +34,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await api.post("/auth/login", { email, password });
+      localStorage.setItem("access_token", res.data.access_token);
       login(res.data.user);
     } catch (err: any) {
       if (err?.response?.status === 401) {

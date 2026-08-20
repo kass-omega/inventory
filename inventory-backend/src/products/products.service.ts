@@ -86,8 +86,9 @@ export class ProductsService {
     // Determine which location to filter inventory by
     const invLocationId = locationId ?? user.locationId ?? undefined;
 
-    // Non-owner users should only see products in their location's inventory
-    if (!locationId && user.locationId) {
+    // Storekeepers only see products stocked in their store. Shopkeepers need
+    // the full catalog to create stock requests, and owners see everything.
+    if (!locationId && user.locationType === 'STORE' && user.locationId) {
       conditions.push({
         inventory: {
           some: { locationId: user.locationId },
@@ -126,8 +127,10 @@ export class ProductsService {
 
     if (!product) throw new NotFoundException('Product not found');
 
-    // If non-owner and product has no inventory at their location, deny access
+    // Storekeepers can only open products stocked in their store; shopkeepers
+    // and owners can open any product in the catalog.
     if (
+      user.locationType === 'STORE' &&
       user.locationId &&
       (!product.inventory || product.inventory.length === 0)
     ) {

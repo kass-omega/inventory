@@ -1,6 +1,7 @@
 // prisma/seed-prod.ts
-// Production reset seed: wipes the database and creates ONLY the
-// primary owner account plus the permission catalog and Owner role.
+// Production seed (IDEMPOTENT): seeds ONLY the primary owner account plus the
+// permission catalog and Owner role. If the owner already exists it skips,
+// so it is safe to run on every deploy without wiping live data.
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS } from '../src/common/permissions';
@@ -15,6 +16,14 @@ const OWNER = {
 };
 
 async function main() {
+  const existingOwner = await prisma.user.findUnique({
+    where: { email: OWNER.email },
+  });
+  if (existingOwner) {
+    console.log(`Owner already exists (${OWNER.email}). Skipping seed — nothing to do.`);
+    return;
+  }
+
   console.log('Resetting database and seeding production owner...');
 
   await prisma.creditPayment.deleteMany({});

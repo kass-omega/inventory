@@ -35,6 +35,13 @@ export function onApiPendingChange(cb: (count: number) => void) {
 
 api.interceptors.request.use((config) => {
   updatePending(1);
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("access_token");
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  }
   return config;
 });
 
@@ -45,6 +52,17 @@ api.interceptors.response.use(
   },
   (err) => {
     updatePending(-1);
+    if (typeof window !== "undefined") {
+      const status = err?.response?.status;
+      const url = err?.config?.url || "";
+      if (status === 401 && !url.includes("/auth/login")) {
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("user");
+        if (!window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login";
+        }
+      }
+    }
     return Promise.reject(err);
   },
 );

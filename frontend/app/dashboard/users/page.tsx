@@ -88,8 +88,13 @@ export default function UsersPage() {
   const handleDelete = async (id: number) => {
     const ok = await confirm("Delete this user?");
     if (!ok) return;
-    await api.delete(`/users/${id}`);
-    api.get("/users").then((res) => setUsers(res.data));
+    try {
+      await api.delete(`/users/${id}`);
+      toast.success("User deleted");
+      api.get("/users").then((res) => setUsers(res.data));
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || "Failed to delete user");
+    }
   };
 
   const openResetPassword = (u: any) => {

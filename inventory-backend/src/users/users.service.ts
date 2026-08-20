@@ -173,7 +173,20 @@ export class UsersService {
       throw new BadRequestException('Cannot delete the last system owner');
     }
 
-    await this.prisma.user.delete({ where: { id } });
+    // The user can be referenced by audit logs (ON DELETE RESTRICT) and sales
+    // (Sale.soldById FK, ON DELETE RESTRICT), so a plain delete fails. Run the
+    // deletion in a transaction: drop the user's audit trail + push
+    // subscriptions, re-attribute their sales to the acting user to preserve
+    // sales history, then delete the account.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.auditLog.deleteMany({ where: { userId: id } });
+      await tx.pushSubscription.deleteMany({ where: { userId: id } });
+      await tx.sale.updateMany({
+        where: { soldById: id },
+        data: { soldById: caller.sub },
+      });
+      await tx.user.delete({ where: { id } });
+    });
     await this.audit(
       caller.sub,
       'USER_DELETED',

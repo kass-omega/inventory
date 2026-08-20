@@ -65,6 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const status = err?.response?.status;
         if (status === 401 || status === 403) {
           localStorage.removeItem("user");
+          localStorage.removeItem("access_token");
           setUser(null);
         }
       })
@@ -82,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     api.post("/auth/logout").catch(() => {});
     localStorage.removeItem("user");
+    localStorage.removeItem("access_token");
     setUser(null);
     router.push("/login");
   };

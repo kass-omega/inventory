@@ -8,6 +8,8 @@
   "scripts": {
     "build": "npx prisma generate && npx prisma db push --accept-data-loss && nest build",
     "db:reset:prod": "npx prisma generate && npx prisma db push --force-reset && npx ts-node prisma/seed-prod.ts",
+    "seed": "ts-node prisma/seed.ts",
+    "seed:prod": "ts-node prisma/seed-prod.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -93,6 +95,6 @@
     "testEnvironment": "node"
   },
   "prisma": {
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed-entry.ts"
   }
 }

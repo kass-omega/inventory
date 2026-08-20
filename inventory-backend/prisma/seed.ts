@@ -8,6 +8,13 @@ import {
 import * as bcrypt from 'bcrypt';
 import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS } from '../src/common/permissions';
 
+if (process.env.NODE_ENV === 'production') {
+  console.error(
+    'Refusing to run the development seed in production. Use "npm run seed:prod" (seed-prod.ts) instead.',
+  );
+  process.exit(1);
+}
+
 const prisma = new PrismaClient();
 
 async function main() {

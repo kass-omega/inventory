@@ -173,3 +173,4 @@ _(Once logged in as the Owner, you can use the "Manage Users" page to create Sho
 ---
 
 _Built with ❤️ using NestJS and Next.js_
+# inventory-backend
