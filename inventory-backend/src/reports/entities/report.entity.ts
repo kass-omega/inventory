@@ -22,9 +22,9 @@ export interface SalesSummaryResponse {
   margin: string;
   topProducts: TopProduct[];
   breakdown: {
-    fullyPaid: { revenue: number; cost: number; profit: number };
-    partiallyPaid: { revenue: number; cost: number; profit: number };
-    credited: { revenue: number; cost: number; profit: number };
+    fullyPaid: { revenue: number; cost: number; profit: number; collected: number; outstanding: number };
+    partiallyPaid: { revenue: number; cost: number; profit: number; collected: number; outstanding: number };
+    credited: { revenue: number; cost: number; profit: number; collected: number; outstanding: number };
   };
 }
 
@@ -32,6 +32,7 @@ export interface SalesTrendPoint {
   date: string;
   sales: number;
   flips: number;
+  collections: number;
 }
 
 export interface TopProduct {

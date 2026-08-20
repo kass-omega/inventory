@@ -64,10 +64,10 @@ export default function DashboardPage() {
     } else {
       api
         .get(
-          `/reports/inventory-breakdown?categoryId=${categoryFilter}&search=${search}`,
+          `/products/my-inventory?categoryId=${categoryFilter}&search=${search}`,
         )
         .then((r) => {
-          setInventory(r.data.rows || []);
+          setInventory(r.data || []);
           setLoading(false);
         })
         .catch(() => setLoading(false));
@@ -128,16 +128,17 @@ export default function DashboardPage() {
                         {inv.productName}
                       </td>
                       <td
-                        className={`p-2 sm:p-3 text-center font-bold text-xs sm:text-sm ${inv.total < 10 ? "text-red-500" : "text-blue-600"}`}
+                        className={`p-2 sm:p-3 text-center font-bold text-xs sm:text-sm ${inv.quantity < 10 ? "text-red-500" : "text-blue-600"}`}
                       >
-                        {inv.total}
+                        {inv.quantity}
                       </td>
                     </tr>
                   ))}
                   {inventory.length === 0 && (
                     <tr>
                       <td colSpan={2} className="p-4 sm:p-6 text-center text-gray-400">
-                        No inventory data.
+                        No inventory yet. Request stock from your store to get
+                        started.
                       </td>
                     </tr>
                   )}
@@ -192,11 +193,11 @@ export default function DashboardPage() {
                       }}
                       cursor={{ fill: "#f9fafb" }}
                     />
-                    <Bar dataKey="total" radius={[0, 4, 4, 0]} barSize={16}>
+                    <Bar dataKey="quantity" radius={[0, 4, 4, 0]} barSize={16}>
                       {inventory.slice(0, 20).map((_: any, i: number) => (
                         <Cell
                           key={i}
-                          fill={_.total < 10 ? "#ef4444" : "#3b82f6"}
+                          fill={_.quantity < 10 ? "#ef4444" : "#3b82f6"}
                         />
                       ))}
                     </Bar>

@@ -38,6 +38,17 @@ export class ProductsController {
     return this.service.findAll(req.user, search, categoryId, locationId ? +locationId : undefined);
   }
 
+  // The authenticated user's own location stock levels (dashboard widget).
+  // Defined before @Get(':id') so it isn't captured by the id param route.
+  @Get('my-inventory')
+  findMyInventory(
+    @Req() req: RequestWithUser,
+    @Query('search') search?: string,
+    @Query('categoryId') categoryId?: string,
+  ) {
+    return this.service.findMyInventory(req.user, search, categoryId);
+  }
+
   @Get(':id')
   @Permissions('products.view')
   findOne(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {

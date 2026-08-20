@@ -47,6 +47,14 @@ export class RequestsService {
       if (!storeId) throw new BadRequestException('Store ID is required for shop requests');
     }
 
+    // Make sure the supplying location can actually fulfil the request before
+    // anything enters the approval pipeline.
+    if (requestType === RequestType.SHOP_TO_STORE) {
+      await this.validateStoreStock(dto.items, storeId, 'store');
+    } else if (requestType === RequestType.STORE_TO_STORE && fromStoreId) {
+      await this.validateStoreStock(dto.items, fromStoreId, 'source store');
+    }
+
     return this.prisma.stockRequest.create({
       data: {
         shopId,
@@ -75,6 +83,234 @@ export class RequestsService {
         `Request #${req.id}: ${req.items.length} items from ${isStorekeeper ? 'Store' : req.shop?.name}`,
       );
       return req;
+    });
+  }
+
+  /**
+   * Verify the supplying location has each requested product in stock and, when
+   * a quantity is given, enough of it. Throws a detailed error otherwise.
+   */
+  private async validateStoreStock(
+    items: { productId: number; quantityRequested?: number }[],
+    locationId: number,
+    label: string,
+  ) {
+    const problems: string[] = [];
+
+    for (const item of items) {
+      const inventory = await this.prisma.inventory.findUnique({
+        where: {
+          productId_locationId: { productId: item.productId, locationId },
+        },
+        include: { product: true },
+      });
+
+      const productName = inventory?.product
+        ? `${inventory.product.brand} ${inventory.product.baseName}`
+        : `Product #${item.productId}`;
+      const available = inventory?.quantity ?? 0;
+      const requested = item.quantityRequested ?? null;
+
+      if (!inventory || available <= 0) {
+        problems.push(`${productName} is not available at the ${label}`);
+      } else if (requested !== null && requested > available) {
+        problems.push(
+          `${productName}: only ${available} available at the ${label} (requested ${requested})`,
+        );
+      }
+    }
+
+    if (problems.length > 0) {
+      throw new BadRequestException(
+        `Insufficient stock at the ${label}: ${problems.join('; ')}`,
+      );
+    }
+  }
+
+  /**
+   * Owner or request creator edits a request that hasn't started dispatching
+   * yet. Items are replaced wholesale and the request returns to PENDING so the
+   * approval process runs again on the revised quantities.
+   */
+  async editRequest(id: number, dto: CreateRequestDto, user: JwtPayload) {
+    const request = await this.prisma.stockRequest.findUnique({
+      where: { id },
+      include: { items: true },
+    });
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.status === RequestStatus.CLOSED) {
+      throw new BadRequestException('Cannot edit a closed request');
+    }
+
+    const canEdit = user.isSuperuser || request.createdById === user.sub;
+    if (!canEdit) {
+      throw new ForbiddenException(
+        'Only the owner or the request creator can edit this request',
+      );
+    }
+
+    const progressed = request.items.some(
+      (i) =>
+        i.quantityDispatched > 0 ||
+        i.quantityStored > 0 ||
+        i.status === RequestItemStatus.DISPATCHED ||
+        i.status === RequestItemStatus.STORED ||
+        i.status === RequestItemStatus.RECEIVED ||
+        i.status === RequestItemStatus.PARTIALLY_RECEIVED,
+    );
+    if (progressed) {
+      throw new BadRequestException(
+        'Cannot edit a request after dispatch has started',
+      );
+    }
+
+    if (!dto.items || dto.items.length === 0) {
+      throw new BadRequestException('A request needs at least one item');
+    }
+
+    // Keep the original routing but allow re-pointing the supplying store.
+    let storeId = request.storeId;
+    let fromStoreId = request.fromStoreId;
+    if (request.requestType === RequestType.SHOP_TO_STORE && dto.storeId) {
+      storeId = dto.storeId;
+    }
+    if (request.requestType === RequestType.STORE_TO_STORE && dto.fromStoreId) {
+      fromStoreId = dto.fromStoreId;
+    }
+
+    if (request.requestType === RequestType.SHOP_TO_STORE) {
+      await this.validateStoreStock(dto.items, storeId, 'store');
+    } else if (
+      request.requestType === RequestType.STORE_TO_STORE &&
+      fromStoreId
+    ) {
+      await this.validateStoreStock(dto.items, fromStoreId, 'source store');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.requestItem.deleteMany({ where: { requestId: id } });
+      await tx.stockRequest.update({
+        where: { id },
+        data: {
+          storeId,
+          fromStoreId,
+          status: RequestStatus.PENDING,
+          items: {
+            create: dto.items.map((item) => ({
+              productId: item.productId,
+              quantityRequested: item.quantityRequested ?? null,
+              status: RequestItemStatus.PENDING,
+            })),
+          },
+        },
+      });
+    });
+
+    await this.notifications.notifyOwner(
+      'Request Updated',
+      `Request #${id}: quantities were revised and sent back for re-approval`,
+    );
+
+    return this.prisma.stockRequest.findUnique({
+      where: { id },
+      include: {
+        items: { include: { product: true } },
+        shop: true,
+        store: true,
+        fromStore: true,
+      },
+    });
+  }
+
+  /**
+   * When the dispatching store cannot fulfil the requested quantities, it sends
+   * the request back to the creator so they can re-arrange (usually reduce) the
+   * quantities before it goes through approval again.
+   */
+  async sendBack(requestId: number, user: JwtPayload) {
+    const request = await this.prisma.stockRequest.findUnique({
+      where: { id: requestId },
+      include: { items: true },
+    });
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.requestType === RequestType.STORE_TO_OWNER) {
+      throw new BadRequestException(
+        'Send back only applies to shop-to-store and store-to-store requests',
+      );
+    }
+    if (request.status === RequestStatus.CLOSED) {
+      throw new BadRequestException('Cannot send back a closed request');
+    }
+
+    const progressed = request.items.some(
+      (i) =>
+        i.quantityDispatched > 0 ||
+        i.quantityStored > 0 ||
+        i.status === RequestItemStatus.DISPATCHED ||
+        i.status === RequestItemStatus.STORED ||
+        i.status === RequestItemStatus.RECEIVED ||
+        i.status === RequestItemStatus.PARTIALLY_RECEIVED,
+    );
+    if (progressed) {
+      throw new BadRequestException(
+        'Cannot send back after dispatch has started',
+      );
+    }
+
+    const dispatchLocationId =
+      request.requestType === RequestType.STORE_TO_STORE
+        ? request.fromStoreId
+        : request.storeId;
+    const isDispatcher =
+      user.locationType === 'STORE' && user.locationId === dispatchLocationId;
+    if (!user.isSuperuser && !isDispatcher) {
+      throw new ForbiddenException(
+        'Only the dispatching store or the owner can send a request back',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.requestItem.updateMany({
+        where: { requestId },
+        data: { status: RequestItemStatus.PENDING, quantityDispatched: 0 },
+      });
+      await tx.stockRequest.update({
+        where: { id: requestId },
+        data: { status: RequestStatus.PENDING },
+      });
+    });
+
+    const creatorLocationId =
+      request.requestType === RequestType.STORE_TO_STORE
+        ? request.storeId
+        : request.shopId;
+    if (creatorLocationId) {
+      await this.notifications.notifyLocation(
+        'Request Sent Back',
+        `Request #${requestId}: the store ran out of stock before dispatch. Please review and adjust the quantities, then resubmit.`,
+        creatorLocationId,
+      );
+    }
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          userId: user.sub,
+          action: 'SEND_BACK',
+          details: `Sent request #${requestId} back to the creator for re-arranging quantities`,
+        },
+      });
+    } catch {
+      // audit logging must never break the flow
+    }
+
+    return this.prisma.stockRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        items: { include: { product: true } },
+        shop: true,
+        store: true,
+        fromStore: true,
+      },
     });
   }
 
@@ -165,6 +401,7 @@ export class RequestsService {
     const allTerminal = items.every(
       (i: any) =>
         i.status === RequestItemStatus.RECEIVED ||
+        i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
         i.status === RequestItemStatus.REJECTED,
     );
     const allRejected = items.every(
@@ -188,6 +425,7 @@ export class RequestsService {
         i.status === RequestItemStatus.DISPATCHED ||
         i.status === RequestItemStatus.STORED ||
         i.status === RequestItemStatus.RECEIVED ||
+        i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
         i.status === RequestItemStatus.REJECTED,
     );
     const allDispatchedOrBeyond = items.every(
@@ -195,6 +433,7 @@ export class RequestsService {
         i.status === RequestItemStatus.DISPATCHED ||
         i.status === RequestItemStatus.STORED ||
         i.status === RequestItemStatus.RECEIVED ||
+        i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
         i.status === RequestItemStatus.REJECTED,
     );
 
@@ -462,7 +701,15 @@ export class RequestsService {
       throw new ForbiddenException('Only the request creator can confirm receipt');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    // Shortages (received < dispatched/stored) are reported to whoever
+    // dispatched after the transaction commits.
+    const shortageNotices: {
+      toOwner: boolean;
+      locationId: number;
+      message: string;
+    }[] = [];
+
+    const txResult = await this.prisma.$transaction(async (tx) => {
       for (const update of items) {
         const item = request.items.find((i) => i.id === update.id);
         if (!item) throw new BadRequestException(`Invalid item ID: ${update.id}`);
@@ -525,9 +772,17 @@ export class RequestsService {
           }
         }
 
+        const hasShortage = receivedQty < dispatchedOrStoredQty;
         await tx.requestItem.update({
           where: { id: update.id },
-          data: { status: RequestItemStatus.RECEIVED, confirmedById: user.sub, confirmedAt: new Date() },
+          data: {
+            status: hasShortage
+              ? RequestItemStatus.PARTIALLY_RECEIVED
+              : RequestItemStatus.RECEIVED,
+            quantityReceived: receivedQty,
+            confirmedById: user.sub,
+            confirmedAt: new Date(),
+          },
         });
 
         const receiptLabel = isStoreToOwner ? 'Store' : isStoreToStore ? 'Receiving Store' : 'Shop';
@@ -535,9 +790,26 @@ export class RequestsService {
           data: {
             userId: user.sub,
             action: 'CONFIRM_RECEIPT',
-            details: `Confirmed receipt of ${receivedQty} at ${receiptLabel}`,
+            details: `Confirmed receipt of ${receivedQty} (of ${dispatchedOrStoredQty}) at ${receiptLabel}`,
           },
         });
+
+        // A gap between what was dispatched/stored and what actually arrived is
+        // recorded so the dispatcher can investigate or make good the missing
+        // quantity. Only the actually-received amount is added to stock above.
+        if (hasShortage) {
+          const gap = dispatchedOrStoredQty - receivedQty;
+          const productName = `${item.product.brand} ${item.product.baseName}`;
+          shortageNotices.push({
+            toOwner: isStoreToOwner,
+            // STORE_TO_STORE always has a source store; SHOP_TO_STORE and
+            // STORE_TO_OWNER always have a store.
+            locationId: isStoreToStore
+              ? (request.fromStoreId as number)
+              : request.storeId,
+            message: `Request #${requestId}: ${productName} — expected ${dispatchedOrStoredQty}, received ${receivedQty} (${gap} missing).`,
+          });
+        }
       }
 
       const newStatus = await this.evaluateRequestStatus(tx, requestId);
@@ -562,5 +834,20 @@ export class RequestsService {
 
       return result;
     });
+
+    // Report any gaps between what was sent and what was actually received.
+    for (const notice of shortageNotices) {
+      if (notice.toOwner) {
+        await this.notifications.notifyOwner('Shortage Reported', notice.message);
+        continue;
+      }
+      await this.notifications.notifyLocation(
+        'Shortage Reported',
+        notice.message,
+        notice.locationId,
+      );
+    }
+
+    return txResult;
   }
 }

@@ -27,6 +27,7 @@ export default function CustomerDetailPage() {
   const [payAmount, setPayAmount] = useState("");
   const [payNotes, setPayNotes] = useState("");
   const [payMethodId, setPayMethodId] = useState("");
+  const [paySaleId, setPaySaleId] = useState("");
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
 
   const [newMethodName, setNewMethodName] = useState("");
@@ -35,6 +36,7 @@ export default function CustomerDetailPage() {
   const [editPayAmount, setEditPayAmount] = useState("");
   const [editPayNotes, setEditPayNotes] = useState("");
   const [editPayMethodId, setEditPayMethodId] = useState("");
+  const [editPaySaleId, setEditPaySaleId] = useState("");
   const [editNewMethodName, setEditNewMethodName] = useState("");
   const [showSaleModal, setShowSaleModal] = useState(false);
 
@@ -64,11 +66,13 @@ export default function CustomerDetailPage() {
         amount: Number(payAmount),
         notes: payNotes || undefined,
         paymentMethodId: payMethodId ? Number(payMethodId) : undefined,
+        saleId: paySaleId ? Number(paySaleId) : undefined,
       });
       setShowPayModal(false);
       setPayAmount("");
       setPayNotes("");
       setPayMethodId("");
+      setPaySaleId("");
 
       fetchCustomer();
     } catch {
@@ -103,6 +107,7 @@ export default function CustomerDetailPage() {
     setEditPayAmount(String(cp.amount));
     setEditPayNotes(cp.notes || "");
     setEditPayMethodId(cp.paymentMethodId ? String(cp.paymentMethodId) : "");
+    setEditPaySaleId(cp.saleId ? String(cp.saleId) : "");
     setShowEditPayModal(true);
   };
 
@@ -113,12 +118,14 @@ export default function CustomerDetailPage() {
         amount: Number(editPayAmount),
         notes: editPayNotes || undefined,
         paymentMethodId: editPayMethodId ? Number(editPayMethodId) : undefined,
+        saleId: editPaySaleId ? Number(editPaySaleId) : null,
       });
       setShowEditPayModal(false);
       setEditingPayment(null);
       setEditPayAmount("");
       setEditPayNotes("");
       setEditPayMethodId("");
+      setEditPaySaleId("");
       fetchCustomer();
     } catch {
       toast.error("Failed to update payment");
@@ -170,6 +177,12 @@ export default function CustomerDetailPage() {
     });
     return result;
   }, [filteredSales]);
+
+  // Credit sales that still have an outstanding balance and can be linked to a
+  // payment (must have a real Sale behind them, not just a legacy record).
+  const payableSales = (customer?.creditSales || []).filter(
+    (cs: any) => cs.sale?.id && (cs.sale.remainingAmount ?? 0) > 0,
+  );
 
   if (!customer) return <div className="p-8 text-gray-400">Loading...</div>;
 
@@ -300,7 +313,9 @@ export default function CustomerDetailPage() {
                   <div className="px-3 sm:px-4 py-1.5 text-[10px] sm:text-xs text-gray-400 bg-gray-50/50 flex justify-between items-center">
                     <span>
                       {cs.shop?.name || "Shop"} · {cs.items.length} item
-                      {cs.items.length > 1 ? "s" : ""}
+                      {cs.items.length > 1 ? "s" : ""} · Remaining:{" "}
+                      {(cs.sale?.remainingAmount ?? cs.totalAmount).toFixed(2)}{" "}
+                      birr
                     </span>
                     <RowActionsMenu
                       items={[
@@ -460,6 +475,23 @@ export default function CustomerDetailPage() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-500 mb-1">
+              Credit Sale (optional)
+            </label>
+            <select
+              value={paySaleId}
+              onChange={(e) => setPaySaleId(e.target.value)}
+              className="border p-2 rounded-lg w-full bg-white text-sm"
+            >
+              <option value="">— Not linked —</option>
+              {payableSales.map((cs: any) => (
+                <option key={cs.id} value={cs.sale.id}>
+                  Credit #{cs.id} — {(cs.sale.remainingAmount || 0).toFixed(2)} birr remaining
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-1">
               Payment Method
             </label>
             <div className="flex gap-2">
@@ -537,6 +569,23 @@ export default function CustomerDetailPage() {
               className="border p-2 rounded-lg w-full text-sm"
               required
             />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-1">
+              Credit Sale (optional)
+            </label>
+            <select
+              value={editPaySaleId}
+              onChange={(e) => setEditPaySaleId(e.target.value)}
+              className="border p-2 rounded-lg w-full bg-white text-sm"
+            >
+              <option value="">— Not linked —</option>
+              {payableSales.map((cs: any) => (
+                <option key={cs.id} value={cs.sale.id}>
+                  Credit #{cs.id} — {(cs.sale.remainingAmount || 0).toFixed(2)} birr remaining
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-500 mb-1">

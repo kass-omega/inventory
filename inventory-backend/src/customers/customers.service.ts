@@ -33,7 +33,18 @@ export class CustomersService {
       where: { id },
       include: {
         creditSales: {
-          include: { items: { include: { product: true } }, shop: true },
+          include: {
+            items: { include: { product: true } },
+            shop: true,
+            sale: {
+              select: {
+                id: true,
+                saleType: true,
+                paidAmount: true,
+                remainingAmount: true,
+              },
+            },
+          },
           orderBy: { createdAt: 'desc' },
         },
         creditPayments: { orderBy: { paidAt: 'desc' }, include: { paymentMethod: true } },

@@ -80,12 +80,32 @@ export default function SalesReport({ startDate, endDate, categoryId, locationId
               <span className="text-gray-300">|</span>
               <span>Margin <strong className="text-blue-600">{unified.sales.margin}%</strong></span>
               {unified.sales.breakdown && (
-                <>
-                  <span className="text-gray-300">|</span>
-                  <span className="text-xs">Paid <strong className="text-green-700">{unified.sales.breakdown.fullyPaid.revenue.toFixed(0)}</strong></span>
-                  <span className="text-xs">Partial <strong className="text-yellow-700">{unified.sales.breakdown.partiallyPaid.revenue.toFixed(0)}</strong></span>
-                  <span className="text-xs">Credit <strong className="text-red-700">{unified.sales.breakdown.credited.revenue.toFixed(0)}</strong></span>
-                </>
+                <div className="w-full mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <div className="rounded-lg bg-green-50 px-3 py-2">
+                    <span className="text-green-700 font-semibold">Fully Paid</span>
+                    <div className="text-gray-700">
+                      {unified.sales.breakdown.fullyPaid.revenue.toFixed(2)} birr
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-yellow-50 px-3 py-2">
+                    <span className="text-yellow-700 font-semibold">Partial</span>
+                    <div className="text-gray-700">
+                      Collected {unified.sales.breakdown.partiallyPaid.collected.toFixed(2)} birr
+                    </div>
+                    <div className="text-red-600">
+                      Outstanding {unified.sales.breakdown.partiallyPaid.outstanding.toFixed(2)} birr
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-red-50 px-3 py-2">
+                    <span className="text-red-700 font-semibold">Credit</span>
+                    <div className="text-gray-700">
+                      Collected {unified.sales.breakdown.credited.collected.toFixed(2)} birr
+                    </div>
+                    <div className="text-red-600">
+                      Outstanding {unified.sales.breakdown.credited.outstanding.toFixed(2)} birr
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           )}
@@ -138,6 +158,7 @@ export default function SalesReport({ startDate, endDate, categoryId, locationId
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="sales" name="Sales" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
                 <Line type="monotone" dataKey="flips" name="Quick Purchases" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="5 3" />
+                <Line type="monotone" dataKey="collections" name="Credit Collections" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="3 3" />
               </LineChart>
             </ResponsiveContainer>
           </div>

@@ -177,6 +177,32 @@ export class ReportsService {
       }
     }
 
+    // Collected (cash received) vs outstanding per sale type. The sale payment
+    // fields are kept in sync whenever a credit payment is recorded against a
+    // sale, so this reflects the actual money received so far.
+    const paymentTotals = {
+      fullyPaid: { collected: 0, outstanding: 0 },
+      partiallyPaid: { collected: 0, outstanding: 0 },
+      credited: { collected: 0, outstanding: 0 },
+    };
+    for (const sale of sales) {
+      const matched =
+        sale.items.length === 0
+          ? !categoryNum && !searchTerm
+          : sale.items.some((item) =>
+              this.matchesFilters(item, categoryNum, searchTerm),
+            );
+      if (!matched) continue;
+      const key =
+        sale.saleType === 'FULLY_PAID'
+          ? 'fullyPaid'
+          : sale.saleType === 'PARTIALLY_PAID'
+            ? 'partiallyPaid'
+            : 'credited';
+      paymentTotals[key].collected += sale.paidAmount || 0;
+      paymentTotals[key].outstanding += sale.remainingAmount || 0;
+    }
+
     // Subtract returns/refunds within the same shop + date window
     const returnWhere: any = {};
     if (targetLocationId) returnWhere.shopId = targetLocationId;
@@ -213,9 +239,27 @@ export class ReportsService {
       margin: netRevenue > 0 ? ((totalProfit / netRevenue) * 100).toFixed(2) : '0.00',
       topProducts,
       breakdown: {
-        fullyPaid: { revenue: fullyPaidRevenue, cost: fullyPaidCost, profit: fullyPaidRevenue - fullyPaidCost },
-        partiallyPaid: { revenue: partiallyPaidRevenue, cost: partiallyPaidCost, profit: partiallyPaidRevenue - partiallyPaidCost },
-        credited: { revenue: creditedRevenue, cost: creditedCost, profit: creditedRevenue - creditedCost },
+        fullyPaid: {
+          revenue: fullyPaidRevenue,
+          cost: fullyPaidCost,
+          profit: fullyPaidRevenue - fullyPaidCost,
+          collected: paymentTotals.fullyPaid.collected,
+          outstanding: paymentTotals.fullyPaid.outstanding,
+        },
+        partiallyPaid: {
+          revenue: partiallyPaidRevenue,
+          cost: partiallyPaidCost,
+          profit: partiallyPaidRevenue - partiallyPaidCost,
+          collected: paymentTotals.partiallyPaid.collected,
+          outstanding: paymentTotals.partiallyPaid.outstanding,
+        },
+        credited: {
+          revenue: creditedRevenue,
+          cost: creditedCost,
+          profit: creditedRevenue - creditedCost,
+          collected: paymentTotals.credited.collected,
+          outstanding: paymentTotals.credited.outstanding,
+        },
       },
     };
   }
@@ -238,11 +282,11 @@ export class ReportsService {
 
     const categoryNum = categoryId && !Number.isNaN(categoryId) && categoryId > 0 ? categoryId : null;
     const searchTerm = search?.toLowerCase() || null;
-    const trend: Record<string, { sales: number; flips: number }> = {};
+    const trend: Record<string, { sales: number; flips: number; collections: number }> = {};
 
     for (const sale of sales) {
       const date = sale.saleDate.toISOString().slice(0, 10);
-      trend[date] = trend[date] || { sales: 0, flips: 0 };
+      trend[date] = trend[date] || { sales: 0, flips: 0, collections: 0 };
       if (sale.items.length === 0) {
         // Quick-purchase flip
         if (!categoryNum && !searchTerm) trend[date].flips += sale.totalAmount;
@@ -256,11 +300,41 @@ export class ReportsService {
       }
     }
 
+    // Credit collections, bucketed on the day the money actually arrived.
+    const paymentWhere: any = {};
+    if (startDate && endDate) {
+      const endOfDay = new Date(endDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      paymentWhere.paidAt = { gte: new Date(startDate), lte: endOfDay };
+    }
+    const creditPayments = await this.prisma.creditPayment.findMany({
+      where: paymentWhere,
+      include: {
+        sale: { include: { items: { include: { product: true } } } },
+        customer: true,
+      },
+    });
+    for (const payment of creditPayments) {
+      const shopId = payment.sale?.shopId ?? payment.customer?.shopId ?? null;
+      if (targetLocationId && shopId !== targetLocationId) continue;
+      if (categoryNum || searchTerm) {
+        if (!payment.sale) continue; // unlinked payments only count without product filters
+        const matched = payment.sale.items.some((item) =>
+          this.matchesFilters(item, categoryNum, searchTerm),
+        );
+        if (!matched) continue;
+      }
+      const date = payment.paidAt.toISOString().slice(0, 10);
+      trend[date] = trend[date] || { sales: 0, flips: 0, collections: 0 };
+      trend[date].collections += payment.amount;
+    }
+
     return Object.entries(trend)
       .map(([date, d]) => ({
         date,
         sales: Math.round(d.sales * 100) / 100,
         flips: Math.round(d.flips * 100) / 100,
+        collections: Math.round(d.collections * 100) / 100,
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
   }
@@ -337,9 +411,41 @@ export class ReportsService {
     const categoryNum = categoryId && !Number.isNaN(categoryId) && categoryId > 0 ? categoryId : null;
     const searchTerm = search?.toLowerCase() || null;
 
+    let start: Date | undefined;
+    let endOfDay: Date | undefined;
+    if (startDate && endDate) {
+      start = new Date(startDate);
+      endOfDay = new Date(endDate);
+      endOfDay.setHours(23, 59, 59, 999);
+    }
+
     const map = new Map<string, { count: number; total: number }>();
+    const add = (method: string, amount: number) => {
+      if (amount <= 0) return;
+      const entry = map.get(method) || { count: 0, total: 0 };
+      entry.count += 1;
+      entry.total += amount;
+      map.set(method, entry);
+    };
+
+    // Money received at sale time — fully paid sales and the initial portion of
+    // partial sales — labelled with the sale type (e.g. "Cash (Fully Paid)",
+    // "Cash (Partial)").
+    const partialSaleIds = sales
+      .filter((s) => s.saleType === 'PARTIALLY_PAID')
+      .map((s) => s.id);
+    const linkedTotals = partialSaleIds.length
+      ? await this.prisma.creditPayment.groupBy({
+          by: ['saleId'],
+          where: { saleId: { in: partialSaleIds } },
+          _sum: { amount: true },
+        })
+      : [];
+    const linkedBySale = new Map<number, number>(
+      linkedTotals.map((l) => [l.saleId as number, l._sum.amount || 0]),
+    );
+
     for (const sale of sales) {
-      // Apply category/search filter per sale item
       let saleTotal = 0;
       if (sale.items.length === 0) {
         if (!categoryNum && !searchTerm) saleTotal = sale.totalAmount;
@@ -351,13 +457,46 @@ export class ReportsService {
       }
       if (saleTotal === 0) continue;
 
-      const name = sale.saleType === 'CREDITED'
-        ? 'Credit'
-        : (sale.paymentMethod?.name ?? 'Unspecified');
-      const entry = map.get(name) || { count: 0, total: 0 };
-      entry.count++;
-      entry.total += saleTotal;
-      map.set(name, entry);
+      const methodName = sale.paymentMethod?.name ?? 'Unspecified';
+      if (sale.saleType === 'FULLY_PAID') {
+        add(`${methodName} (Fully Paid)`, sale.paidAmount || sale.totalAmount);
+      } else if (sale.saleType === 'PARTIALLY_PAID') {
+        // The initial partial amount excludes anything already settled through
+        // linked credit payments (those are reported separately below).
+        const settled = linkedBySale.get(sale.id) || 0;
+        const initialPaid = Math.max(0, (sale.paidAmount || 0) - settled);
+        add(`${methodName} (Partial)`, initialPaid);
+      }
+      // CREDITED sales contribute nothing at sale time — only their credit
+      // payments (below) count as money received.
+    }
+
+    // Credit payments received in the window, by their own payment method.
+    const paymentWhere: any = {};
+    if (start && endOfDay) paymentWhere.paidAt = { gte: start, lte: endOfDay };
+    const creditPayments = await this.prisma.creditPayment.findMany({
+      where: paymentWhere,
+      include: {
+        paymentMethod: true,
+        sale: { include: { items: { include: { product: true } } } },
+        customer: true,
+      },
+    });
+
+    for (const payment of creditPayments) {
+      const shopId = payment.sale?.shopId ?? payment.customer?.shopId ?? null;
+      if (targetLocationId && shopId !== targetLocationId) continue;
+
+      if (categoryNum || searchTerm) {
+        if (!payment.sale) continue; // unlinked payments only count without product filters
+        const matched = payment.sale.items.some((item) =>
+          this.matchesFilters(item, categoryNum, searchTerm),
+        );
+        if (!matched) continue;
+      }
+
+      const methodName = payment.paymentMethod?.name ?? 'Cash';
+      add(`${methodName} (Credit)`, payment.amount);
     }
 
     return Array.from(map.entries()).map(([method, data]) => ({
@@ -757,11 +896,11 @@ export class ReportsService {
       _count: true,
     });
 
-    // Sale type breakdown (gross, all sales)
+    // Sale type breakdown (gross, all sales) + actual collections per type
     const [fullyPaid, partiallyPaid, credited] = await Promise.all([
-      this.prisma.sale.aggregate({ where: { ...baseWhere, saleType: 'FULLY_PAID' }, _sum: { totalAmount: true, profit: true } }),
-      this.prisma.sale.aggregate({ where: { ...baseWhere, saleType: 'PARTIALLY_PAID' }, _sum: { totalAmount: true, profit: true } }),
-      this.prisma.sale.aggregate({ where: { ...baseWhere, saleType: 'CREDITED' }, _sum: { totalAmount: true, profit: true } }),
+      this.prisma.sale.aggregate({ where: { ...baseWhere, saleType: 'FULLY_PAID' }, _sum: { totalAmount: true, profit: true, paidAmount: true, remainingAmount: true } }),
+      this.prisma.sale.aggregate({ where: { ...baseWhere, saleType: 'PARTIALLY_PAID' }, _sum: { totalAmount: true, profit: true, paidAmount: true, remainingAmount: true } }),
+      this.prisma.sale.aggregate({ where: { ...baseWhere, saleType: 'CREDITED' }, _sum: { totalAmount: true, profit: true, paidAmount: true, remainingAmount: true } }),
     ]);
 
     // Returns within the same window
@@ -808,9 +947,24 @@ export class ReportsService {
         count: regularSales._count,
         margin: +salesMargin.toFixed(1),
         breakdown: {
-          fullyPaid: { revenue: fullyPaid._sum.totalAmount || 0, profit: fullyPaid._sum.profit || 0 },
-          partiallyPaid: { revenue: partiallyPaid._sum.totalAmount || 0, profit: partiallyPaid._sum.profit || 0 },
-          credited: { revenue: credited._sum.totalAmount || 0, profit: credited._sum.profit || 0 },
+          fullyPaid: {
+            revenue: fullyPaid._sum.totalAmount || 0,
+            profit: fullyPaid._sum.profit || 0,
+            collected: fullyPaid._sum.paidAmount || 0,
+            outstanding: fullyPaid._sum.remainingAmount || 0,
+          },
+          partiallyPaid: {
+            revenue: partiallyPaid._sum.totalAmount || 0,
+            profit: partiallyPaid._sum.profit || 0,
+            collected: partiallyPaid._sum.paidAmount || 0,
+            outstanding: partiallyPaid._sum.remainingAmount || 0,
+          },
+          credited: {
+            revenue: credited._sum.totalAmount || 0,
+            profit: credited._sum.profit || 0,
+            collected: credited._sum.paidAmount || 0,
+            outstanding: credited._sum.remainingAmount || 0,
+          },
         },
       },
       flips: {
@@ -1154,25 +1308,31 @@ export class ReportsService {
       },
       {
         title: 'Sale Type Breakdown',
-        headers: ['Type', 'Revenue', 'Cost', 'Profit'],
+        headers: ['Type', 'Revenue', 'Cost', 'Profit', 'Collected', 'Outstanding'],
         rows: [
           [
             'Fully Paid',
             summary.breakdown.fullyPaid.revenue,
             summary.breakdown.fullyPaid.cost,
             summary.breakdown.fullyPaid.profit,
+            summary.breakdown.fullyPaid.collected,
+            summary.breakdown.fullyPaid.outstanding,
           ],
           [
             'Partially Paid',
             summary.breakdown.partiallyPaid.revenue,
             summary.breakdown.partiallyPaid.cost,
             summary.breakdown.partiallyPaid.profit,
+            summary.breakdown.partiallyPaid.collected,
+            summary.breakdown.partiallyPaid.outstanding,
           ],
           [
             'Credited',
             summary.breakdown.credited.revenue,
             summary.breakdown.credited.cost,
             summary.breakdown.credited.profit,
+            summary.breakdown.credited.collected,
+            summary.breakdown.credited.outstanding,
           ],
         ],
       },
@@ -1185,6 +1345,13 @@ export class ReportsService {
         title: 'Payment Methods',
         headers: ['Method', 'Count', 'Total Amount'],
         rows: paymentMethods.map((p) => [p.method, p.count, p.totalAmount]),
+      },
+      {
+        title: 'Credit Collections by Payment Method',
+        headers: ['Method', 'Count', 'Total Amount'],
+        rows: paymentMethods
+          .filter((p) => p.method.includes('(Credit)'))
+          .map((p) => [p.method, p.count, p.totalAmount]),
       },
       salesList,
     ];

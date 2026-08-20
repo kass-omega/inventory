@@ -43,6 +43,7 @@ enum RequestItemStatus {
   DISPATCHED
   STORED
   RECEIVED
+  PARTIALLY_RECEIVED
 }
 
 enum SaleType {
@@ -232,6 +233,7 @@ model RequestItem {
   quantityRequested  Int?
   quantityDispatched Int               @default(0)
   quantityStored     Int               @default(0)
+  quantityReceived   Int               @default(0)
   status             RequestItemStatus @default(PENDING)
   confirmedById      Int?
   confirmedAt        DateTime?
@@ -262,6 +264,7 @@ model Sale {
   saleDate         DateTime      @default(now())
   items            SaleItem[]
   creditSale       CreditSale?
+  creditPayments   CreditPayment[]
   returns          Return[]
   purchaseId       Int?           @unique
   purchase         Purchase?      @relation(fields: [purchaseId], references: [id])
@@ -360,6 +363,11 @@ model CreditPayment {
   amount          Float
   paymentMethodId Int?
   paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  // Optional link to the specific sale the payment settles, so reports can
+  // attribute collections to the sale type (FULLY_PAID / PARTIALLY_PAID /
+  // CREDITED). NULL = legacy/customer-level payment.
+  saleId          Int?
+  sale            Sale?          @relation(fields: [saleId], references: [id])
   paidAt          DateTime       @default(now())
   notes           String?
 }

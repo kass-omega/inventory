@@ -110,6 +110,42 @@ export class ProductsService {
     });
   }
 
+  /** Current stock levels at the signed-in user's own location. */
+  async findMyInventory(user: JwtPayload, search?: string, categoryId?: string) {
+    if (!user.locationId) return [];
+
+    const inventories = await this.prisma.inventory.findMany({
+      where: {
+        locationId: user.locationId,
+        product: {
+          ...(categoryId && !Number.isNaN(Number(categoryId)) && Number(categoryId) > 0
+            ? { categoryId: Number(categoryId) }
+            : {}),
+          ...(search
+            ? {
+                OR: [
+                  { baseName: { contains: search, mode: 'insensitive' } },
+                  { brand: { contains: search, mode: 'insensitive' } },
+                  { sku: { contains: search, mode: 'insensitive' } },
+                ],
+              }
+            : {}),
+        },
+      },
+      include: { product: true },
+      orderBy: { product: { baseName: 'asc' } },
+    });
+
+    return inventories
+      .filter((inv) => inv.quantity > 0)
+      .map((inv) => ({
+        productId: inv.productId,
+        productName: `${inv.product.brand} ${inv.product.baseName}`,
+        sku: inv.product.sku,
+        quantity: inv.quantity,
+      }));
+  }
+
   async findOne(id: number, user: JwtPayload) {
     const include: any = {
       priceHistory: { orderBy: { updatedAt: 'desc' } },

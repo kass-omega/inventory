@@ -6,6 +6,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
 } from '@nestjs/common';
@@ -24,6 +25,28 @@ export class RequestsController {
   @Permissions('requests.create')
   createRequest(@Body() dto: CreateRequestDto, @Req() req: RequestWithUser) {
     return this.service.createRequest(dto, req.user);
+  }
+
+  // Owner or request creator edits a request that hasn't started dispatching.
+  @Put(':id')
+  @Permissions('requests.create')
+  editRequest(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateRequestDto,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.service.editRequest(id, dto, req.user);
+  }
+
+  // Dispatching store sends the request back to the creator for re-arranging
+  // quantities when it can't fulfil them before dispatch.
+  @Post(':id/send-back')
+  @Permissions('requests.create')
+  sendBack(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.service.sendBack(id, req.user);
   }
 
   @Get()

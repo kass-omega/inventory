@@ -4,6 +4,7 @@ import FilterRow, { FilterField } from "@/app/components/FilterRow";
 import Modal from "@/app/components/Modal";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import SearchableSelect from "@/app/components/SearchableSelect";
+import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
 import api from "@/lib/api";
@@ -12,6 +13,7 @@ import { useEffect, useState } from "react";
 export default function RequestsPage() {
   const { user, hasPermission } = useAuth();
   const toast = useToast();
+  const confirm = useConfirm();
   const [requests, setRequests] = useState([]);
 
   // Filters
@@ -46,6 +48,15 @@ export default function RequestsPage() {
     { productId: string; quantity: string; categoryId: string }[]
   >([{ productId: "", quantity: "", categoryId: "" }]);
 
+  // Edit mode: the request currently being revised (owner or creator).
+  const [editingReq, setEditingReq] = useState<any>(null);
+  // Products of the store selected in the request form, with that store's
+  // inventory, so shopkeepers can see availability while composing.
+  const [storeProducts, setStoreProducts] = useState<any[]>([]);
+  const [storeStockMap, setStoreStockMap] = useState<Record<number, number>>(
+    {},
+  );
+
   const fetchRequests = async () => {
     const query = `status=${statusFilter}&locationId=${locationFilter}&categoryId=${categoryFilter}&productId=${productFilter}&startDate=${startDate}&endDate=${endDate}`;
     const res = await api.get(`/requests?${query}`);
@@ -72,6 +83,27 @@ export default function RequestsPage() {
     endDate,
   ]);
 
+  // Load the selected store's stock so shopkeepers can see availability while
+  // composing (or editing) a request.
+  useEffect(() => {
+    if (!reqStoreId) {
+      setStoreProducts([]);
+      setStoreStockMap({});
+      return;
+    }
+    api
+      .get(`/products?locationId=${reqStoreId}`)
+      .then((res) => {
+        setStoreProducts(res.data);
+        const map: Record<number, number> = {};
+        for (const p of res.data) {
+          map[p.id] = p.inventory?.[0]?.quantity ?? 0;
+        }
+        setStoreStockMap(map);
+      })
+      .catch(() => setStoreProducts([]));
+  }, [reqStoreId]);
+
   const handleCreateRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -80,19 +112,28 @@ export default function RequestsPage() {
         toast.error("Please add at least one product.");
         return;
       }
-      await api.post("/requests", {
+      const payload = {
         storeId: reqStoreId ? Number(reqStoreId) : undefined,
         items: validItems.map((item) => ({
           productId: Number(item.productId),
           quantityRequested: item.quantity ? Number(item.quantity) : undefined,
         })),
-      });
+      };
+      if (editingReq) {
+        await api.put(`/requests/${editingReq.id}`, payload);
+        toast.success("Request updated.");
+      } else {
+        await api.post("/requests", payload);
+      }
       setShowReqModal(false);
+      setEditingReq(null);
       setReqStoreId("");
       setReqItems([{ productId: "", quantity: "", categoryId: "" }]);
       fetchRequests();
-    } catch (err) {
-      toast.error("Failed to create request.");
+    } catch (err: any) {
+      toast.error(
+        err.response?.data?.message || "Failed to create request.",
+      );
     }
   };
 
@@ -232,6 +273,63 @@ export default function RequestsPage() {
       setSelectedReq(null);
     } catch (err: any) {
       toast.error(err.response?.data?.message || "Confirmation failed.");
+    }
+  };
+
+  // True once any item has been dispatched/stored/received, at which point the
+  // request can no longer be edited or sent back.
+  const isProgressed = (req: any) =>
+    req?.items?.some(
+      (i: any) =>
+        i.quantityDispatched > 0 ||
+        i.quantityStored > 0 ||
+        ["DISPATCHED", "STORED", "RECEIVED", "PARTIALLY_RECEIVED"].includes(
+          i.status,
+        ),
+    );
+
+  const canEditRequest = (req: any) => {
+    if (!req || req.status === "CLOSED") return false;
+    if (!(req.createdById === user?.id || user?.isSuperuser)) return false;
+    return !isProgressed(req);
+  };
+
+  const canSendBack = (req: any) => {
+    if (!req || req.requestType === "STORE_TO_OWNER") return false;
+    if (req.status === "CLOSED" || isProgressed(req)) return false;
+    const dispatchLocationId =
+      req.requestType === "STORE_TO_STORE" ? req.fromStoreId : req.storeId;
+    const isDispatcher =
+      user?.locationType === "STORE" && user?.locationId === dispatchLocationId;
+    return Boolean(user?.isSuperuser || isDispatcher);
+  };
+
+  const openEditModal = (req: any) => {
+    setEditingReq(req);
+    setReqStoreId(
+      req.requestType === "SHOP_TO_STORE" ? String(req.storeId ?? "") : "",
+    );
+    setReqItems(
+      req.items.map((i: any) => ({
+        productId: String(i.productId),
+        quantity: i.quantityRequested ?? "",
+        categoryId: i.product?.categoryId ? String(i.product.categoryId) : "",
+      })),
+    );
+    setShowReqModal(true);
+  };
+
+  const handleSendBack = async (req: any) => {
+    const ok = await confirm(
+      "Send this request back to the creator to re-arrange the quantities?",
+    );
+    if (!ok) return;
+    try {
+      await api.post(`/requests/${req.id}/send-back`);
+      toast.success("Request sent back to the creator.");
+      fetchRequests();
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || "Failed to send request back.");
     }
   };
 
@@ -418,7 +516,21 @@ export default function RequestsPage() {
                 </td>
                 <td className="p-2 sm:p-3 md:p-4">
                   <RowActionsMenu
-                    items={[{ label: "Manage", onClick: () => openManageModal(r) }]}
+                    items={[
+                      { label: "Manage", onClick: () => openManageModal(r) },
+                      ...(canEditRequest(r)
+                        ? [{ label: "Edit", onClick: () => openEditModal(r) }]
+                        : []),
+                      ...(canSendBack(r)
+                        ? [
+                            {
+                              label: "Send Back",
+                              onClick: () => handleSendBack(r),
+                              color: "text-amber-600",
+                            },
+                          ]
+                        : []),
+                    ]}
                   />
                 </td>
               </tr>
@@ -481,7 +593,9 @@ export default function RequestsPage() {
                                 ? "bg-indigo-100 text-indigo-800"
                                 : item.status === "STORED"
                                   ? "bg-purple-100 text-purple-800"
-                                  : "bg-green-100 text-green-800"
+                                  : item.status === "PARTIALLY_RECEIVED"
+                                    ? "bg-amber-100 text-amber-800"
+                                    : "bg-green-100 text-green-800"
                       }`}
                     >
                       {item.status.replace(/_/g, " ")}
@@ -490,6 +604,19 @@ export default function RequestsPage() {
                       ? `· Confirmed: ${new Date(item.confirmedAt).toLocaleDateString()}`
                       : ""}
                   </p>
+                  {(item.status === "RECEIVED" ||
+                    item.status === "PARTIALLY_RECEIVED") && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Received: {item.quantityReceived ?? 0}
+                      {item.status === "PARTIALLY_RECEIVED" &&
+                        ` (short by ${
+                          (isStoreToOwner
+                            ? item.quantityStored || 0
+                            : item.quantityDispatched || 0) -
+                          (item.quantityReceived ?? 0)
+                        })`}
+                    </p>
+                  )}
                 </div>
 
                 {/* Owner - Shop→Store: Approve/Reject */}
@@ -506,7 +633,7 @@ export default function RequestsPage() {
                       )
                     }
                     className="border p-2 rounded-lg bg-white"
-                    disabled={item.status !== "PENDING"}
+                    disabled={["DISPATCHED", "STORED", "RECEIVED", "PARTIALLY_RECEIVED"].includes(item.status)}
                   >
                     <option value="PENDING">Pending</option>
                     <option value="APPROVED">Approve</option>
@@ -532,7 +659,7 @@ export default function RequestsPage() {
                         )
                       }
                       className="border p-2 rounded-lg bg-white"
-                      disabled={item.status !== "PENDING"}
+                      disabled={["DISPATCHED", "STORED", "RECEIVED", "PARTIALLY_RECEIVED"].includes(item.status)}
                     >
                       <option value="PENDING">Pending</option>
                       <option value="STORED">Store</option>
@@ -660,6 +787,20 @@ export default function RequestsPage() {
                         }
                         className="border p-2 rounded-lg w-24"
                       />
+                      {(() => {
+                        const expectedQty = isStoreToOwner
+                          ? item.quantityStored || 0
+                          : item.quantityDispatched || 0;
+                        const enteredQty =
+                          receivedData.find((d) => d.id === item.id)
+                            ?.quantityReceived ?? 0;
+                        return enteredQty > 0 && enteredQty < expectedQty ? (
+                          <p className="text-xs text-amber-600 mt-1">
+                            Shortage of {expectedQty - enteredQty} — the
+                            dispatcher will be notified.
+                          </p>
+                        ) : null;
+                      })()}
                     </div>
                   )}
               </div>
@@ -741,9 +882,11 @@ export default function RequestsPage() {
         isOpen={showReqModal}
         onClose={() => setShowReqModal(false)}
         title={
-          user?.locationType === "STORE"
-            ? "Request Restock from Owner"
-            : "Request Stock from Store"
+          editingReq
+            ? `Edit Request #${editingReq.id}`
+            : user?.locationType === "STORE"
+              ? "Request Restock from Owner"
+              : "Request Stock from Store"
         }
       >
         <form onSubmit={handleCreateRequest} className="grid grid-cols-1 gap-4">
@@ -836,6 +979,18 @@ export default function RequestsPage() {
                     />
                     <BarcodeScanner onScan={(sku) => handleScanAt(idx, sku)} />
                   </div>
+                  {reqStoreId &&
+                    storeStockMap[Number(item.productId)] !== undefined && (
+                      <p
+                        className={`text-[11px] mt-1 ${
+                          storeStockMap[Number(item.productId)] <= 0
+                            ? "text-red-500"
+                            : "text-gray-500"
+                        }`}
+                      >
+                        Available at store: {storeStockMap[Number(item.productId)]}
+                      </p>
+                    )}
                 </div>
                 <div className="w-28">
                   <label className="block text-xs font-medium text-gray-500 mb-1">
@@ -887,7 +1042,7 @@ export default function RequestsPage() {
             type="submit"
             className="bg-green-600 text-white p-2 rounded-lg mt-2 font-medium"
           >
-            Submit Request
+            {editingReq ? "Update Request" : "Submit Request"}
           </button>
         </form>
       </Modal>

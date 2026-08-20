@@ -15,6 +15,11 @@ export class CreateCreditPaymentDto {
   @IsOptional()
   @IsInt()
   paymentMethodId?: number;
+
+  // Optional link to the specific credit sale being settled.
+  @IsOptional()
+  @IsInt()
+  saleId?: number | null;
 }
 
 export class UpdateCreditPaymentDto {
@@ -34,4 +39,8 @@ export class UpdateCreditPaymentDto {
   @IsOptional()
   @IsString()
   paidAt?: string;
+
+  @IsOptional()
+  @IsInt()
+  saleId?: number | null;
 }
