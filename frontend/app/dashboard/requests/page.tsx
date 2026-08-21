@@ -298,6 +298,16 @@ export default function RequestsPage() {
     return !isProgressed(req);
   };
 
+  // The owner can delete a request in any status; the creator can only delete
+  // requests that haven't started dispatching or been closed.
+  const canDeleteRequest = (req: any) => {
+    if (!req) return false;
+    if (!(req.createdById === user?.id || user?.isSuperuser)) return false;
+    if (user?.isSuperuser) return true;
+    if (req.status === "CLOSED") return false;
+    return !isProgressed(req);
+  };
+
   const canSendBack = (req: any) => {
     if (!req || req.requestType === "STORE_TO_OWNER") return false;
     if (req.status === "CLOSED" || isProgressed(req)) return false;
@@ -647,7 +657,7 @@ export default function RequestsPage() {
                             },
                           ]
                         : []),
-                      ...(canEditRequest(r)
+                      ...(canDeleteRequest(r)
                         ? [
                             {
                               label: "Delete",

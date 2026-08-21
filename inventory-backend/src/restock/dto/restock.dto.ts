@@ -1,4 +1,10 @@
-import { IsInt, IsNumber, IsPositive, Min } from 'class-validator';
+import {
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  Min,
+} from 'class-validator';
 
 export class RestockDto {
   @IsInt()
@@ -11,11 +17,14 @@ export class RestockDto {
   @IsPositive()
   quantity!: number;
 
+  // Prices are optional — the owner can restock without changing prices.
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  newBuyPrice!: number;
+  newBuyPrice?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  newSellPrice!: number;
+  newSellPrice?: number;
 }

@@ -62,6 +62,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     'requests.create',
     'requests.dispatch',
     'requests.confirm',
+    'restock.create',
     'credits.view',
     'credits.manage',
     'reports.view',

@@ -4,11 +4,17 @@ import Modal from "@/app/components/Modal";
 import ProductForm from "@/app/components/ProductForm";
 import SearchableSelect from "@/app/components/SearchableSelect";
 import { useToast } from "@/app/components/ToastProvider";
+import { useAuth } from "@/context/AuthContext";
 import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 export default function RestockPage() {
+  const { user } = useAuth();
   const toast = useToast();
+  const isOwner = user?.isSuperuser === true;
+  const myStoreId =
+    user?.locationType === "STORE" ? String(user.locationId ?? "") : "";
+
   const [products, setProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [stores, setStores] = useState<any[]>([]);
@@ -43,6 +49,8 @@ export default function RestockPage() {
     api.get("/categories").then((res) => setCategories(res.data));
   }, [search, categoryFilter]);
 
+  const myStore = stores.find((s: any) => s.id === Number(myStoreId));
+
   const handleProductChange = (id: string) => {
     const p = products.find((p: any) => p.id === Number(id));
     if (p)
@@ -68,12 +76,24 @@ export default function RestockPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await api.post("/restock", {
-        ...form,
+      // Non-owner users restock their own store (backend enforces this too).
+      const storeId = isOwner ? Number(form.storeId) : Number(myStoreId);
+      const payload: any = {
         productId: Number(form.productId),
-        storeId: Number(form.storeId),
-      });
-      toast.success("Restock submitted — pending storekeeper confirmation.");
+        storeId,
+        quantity: form.quantity,
+      };
+      // Only the owner can change prices on a restock.
+      if (isOwner) {
+        payload.newBuyPrice = form.newBuyPrice;
+        payload.newSellPrice = form.newSellPrice;
+      }
+      await api.post("/restock", payload);
+      toast.success(
+        isOwner
+          ? "Restock submitted — pending storekeeper confirmation."
+          : "Restock submitted — awaiting owner approval.",
+      );
       setForm({
         productId: "",
         storeId: "",
@@ -98,6 +118,14 @@ export default function RestockPage() {
       <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-800 mb-6">
         Restock / Purchasing
       </h1>
+
+      {!isOwner && (
+        <p className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4">
+          Restocking for your store ({myStore?.name ?? "your store"}). The owner
+          must approve the request first — you'll confirm receipt once the stock
+          is stored.
+        </p>
+      )}
 
       <form
         onSubmit={handleSubmit}
@@ -154,16 +182,22 @@ export default function RestockPage() {
           <label className="block text-sm font-medium text-gray-500 mb-1">
             Store Location
           </label>
-          <SearchableSelect
-            options={stores.map((s: any) => ({
-              value: String(s.id),
-              label: s.name,
-            }))}
-            value={form.storeId}
-            onChange={(v) => setForm({ ...form, storeId: v })}
-            placeholder="Search store..."
-            required
-          />
+          {isOwner ? (
+            <SearchableSelect
+              options={stores.map((s: any) => ({
+                value: String(s.id),
+                label: s.name,
+              }))}
+              value={form.storeId}
+              onChange={(v) => setForm({ ...form, storeId: v })}
+              placeholder="Search store..."
+              required
+            />
+          ) : (
+            <div className="border border-gray-200 bg-gray-50 p-2 rounded-lg text-sm text-gray-700">
+              {myStore?.name ?? "Your store"}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -182,36 +216,40 @@ export default function RestockPage() {
               required
             />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-500 mb-1">
-              New Buy Price ($)
-            </label>
-            <input
-              type="number"
-              step="0.01"
-              value={form.newBuyPrice}
-              onChange={(e) =>
-                setForm({ ...form, newBuyPrice: Number(e.target.value) })
-              }
-              className="border p-2 rounded-lg w-full"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-500 mb-1">
-              New Sell Price ($)
-            </label>
-            <input
-              type="number"
-              step="0.01"
-              value={form.newSellPrice}
-              onChange={(e) =>
-                setForm({ ...form, newSellPrice: Number(e.target.value) })
-              }
-              className="border p-2 rounded-lg w-full"
-              required
-            />
-          </div>
+          {isOwner && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-1">
+                  New Buy Price ($)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={form.newBuyPrice}
+                  onChange={(e) =>
+                    setForm({ ...form, newBuyPrice: Number(e.target.value) })
+                  }
+                  className="border p-2 rounded-lg w-full"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-1">
+                  New Sell Price ($)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={form.newSellPrice}
+                  onChange={(e) =>
+                    setForm({ ...form, newSellPrice: Number(e.target.value) })
+                  }
+                  className="border p-2 rounded-lg w-full"
+                  required
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <button

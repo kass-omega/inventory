@@ -315,9 +315,9 @@ export class RequestsService {
   }
 
   /**
-   * Owner or request creator deletes a request that hasn't started dispatching.
-   * Requests that have progressed (dispatch/receipt) or are closed cannot be
-   * deleted.
+   * Owner or request creator deletes a request. The owner may delete a request
+   * in any status (including closed/progressed ones). Other users may only
+   * delete requests that haven't started dispatching or been closed.
    */
   async remove(id: number, user: JwtPayload) {
     const request = await this.prisma.stockRequest.findUnique({
@@ -325,30 +325,36 @@ export class RequestsService {
       include: { items: true },
     });
     if (!request) throw new NotFoundException('Request not found');
-    if (request.status === RequestStatus.CLOSED) {
-      throw new BadRequestException('Cannot delete a closed request');
-    }
 
-    const canDelete = user.isSuperuser || request.createdById === user.sub;
+    const isOwner = user.isSuperuser;
+    const canDelete = isOwner || request.createdById === user.sub;
     if (!canDelete) {
       throw new ForbiddenException(
         'Only the owner or the request creator can delete this request',
       );
     }
 
-    const progressed = request.items.some(
-      (i) =>
-        i.quantityDispatched > 0 ||
-        i.quantityStored > 0 ||
-        i.status === RequestItemStatus.DISPATCHED ||
-        i.status === RequestItemStatus.STORED ||
-        i.status === RequestItemStatus.RECEIVED ||
-        i.status === RequestItemStatus.PARTIALLY_RECEIVED,
-    );
-    if (progressed) {
-      throw new BadRequestException(
-        'Cannot delete a request after dispatch has started',
+    // The owner can delete regardless of status; others are still restricted
+    // to requests that haven't progressed (dispatch/receipt) or been closed.
+    if (!isOwner) {
+      if (request.status === RequestStatus.CLOSED) {
+        throw new BadRequestException('Cannot delete a closed request');
+      }
+
+      const progressed = request.items.some(
+        (i) =>
+          i.quantityDispatched > 0 ||
+          i.quantityStored > 0 ||
+          i.status === RequestItemStatus.DISPATCHED ||
+          i.status === RequestItemStatus.STORED ||
+          i.status === RequestItemStatus.RECEIVED ||
+          i.status === RequestItemStatus.PARTIALLY_RECEIVED,
       );
+      if (progressed) {
+        throw new BadRequestException(
+          'Cannot delete a request after dispatch has started',
+        );
+      }
     }
 
     await this.prisma.stockRequest.delete({ where: { id } });
