@@ -31,4 +31,16 @@ export class PushController {
     }
     return { count: await this.svc.countSubscriptions() };
   }
+
+  // Owner-only: wipe all stored subscriptions (e.g. after rotating VAPID keys,
+  // because existing subscriptions are bound to the old key).
+  @Post('subscriptions/purge')
+  async purgeSubscriptions(@Req() req: RequestWithUser) {
+    if (!req.user?.isSuperuser) {
+      throw new ForbiddenException(
+        'Only the owner can purge push subscriptions',
+      );
+    }
+    return { deleted: await this.svc.purgeSubscriptions() };
+  }
 }

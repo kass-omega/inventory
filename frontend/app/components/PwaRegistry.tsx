@@ -7,7 +7,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // Public VAPID key (must match the backend's VAPID_PUBLIC_KEY).
 const VAPID_PUBLIC =
   process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ||
-  "BJlyIPasYpzqihbUZwAvqWvjjqyGQ4xOd8NgbF1bWusj4fhue_YF-FH5XuWGVwadwaCeYPPtu1GKEVwCyA-sVK0";
+  "BKMGrGVKhg3nBihAO4SXFTTM4VeNs4pBVmAtS99Zi6yvWO3tvDntPR9jWWIWR5G4WfYttoqaavVZaDucpwvWHtE";
+
+// Fingerprint used to detect VAPID key rotation and re-subscribe automatically.
+const VAPID_FINGERPRINT_STORAGE = "push-vapid-fingerprint";
+const currentVapidFingerprint = VAPID_PUBLIC.slice(-32);
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -59,10 +63,24 @@ export default function PwaRegistry() {
       }
 
       const reg = await navigator.serviceWorker.ready;
+
+      // Key rotation self-healing: if the VAPID key changed since the last
+      // subscription (or we have never recorded one), drop the old subscription
+      // so a fresh one is created with the current key.
+      const existing = await reg.pushManager.getSubscription();
+      const storedFp = localStorage.getItem(VAPID_FINGERPRINT_STORAGE);
+      if (existing && storedFp !== currentVapidFingerprint) {
+        console.info(
+          "[push] VAPID key changed — unsubscribing stale subscription.",
+        );
+        await existing.unsubscribe();
+      }
+
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC),
       });
+      localStorage.setItem(VAPID_FINGERPRINT_STORAGE, currentVapidFingerprint);
       const res = await api.post("/push/subscribe", sub.toJSON());
       subscribedOnce.current = true;
       setPushIssue(null);

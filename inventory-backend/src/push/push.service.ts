@@ -132,6 +132,15 @@ export class PushService {
     return this.prisma.pushSubscription.count();
   }
 
+  /** Delete every stored subscription (used after VAPID key rotation). */
+  async purgeSubscriptions(): Promise<number> {
+    const result = await this.prisma.pushSubscription.deleteMany({});
+    this.logger.warn(
+      `Purged ${result.count} push subscription(s) (owner action).`,
+    );
+    return result.count;
+  }
+
   private shortEndpoint(endpoint: string): string {
     try {
       const u = new URL(endpoint);
