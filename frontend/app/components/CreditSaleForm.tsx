@@ -1,7 +1,8 @@
 "use client";
 import api from "@/lib/api";
-import { useEffect, useState } from "react";
 import BarcodeScanner from "./BarcodeScanner";
+import Loading from "./Loading";
+import { useEffect, useState } from "react";
 
 interface Props {
   customerId: number;
@@ -286,7 +287,14 @@ export default function CreditSaleForm({
           disabled={loading}
           className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
         >
-          {loading ? "Processing..." : "Record Sale"}
+          {loading ? (
+            <span className="inline-flex items-center gap-2">
+              <Loading size="sm" />
+              Processing...
+            </span>
+          ) : (
+            "Record Sale"
+          )}
         </button>
         <button
           type="button"

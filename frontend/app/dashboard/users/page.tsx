@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useToast } from "@/app/components/ToastProvider";
 import { useEffect, useState } from "react";
+import Loading from "../../components/Loading";
 import Modal from "../../components/Modal";
 
 function groupPermissions(permissions: any[]) {
@@ -40,11 +41,22 @@ export default function UsersPage() {
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
     null,
   );
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.get("/users").then((res) => setUsers(res.data));
-    api.get("/locations").then((res) => setLocations(res.data));
-    api.get("/roles").then((res) => setRoles(res.data));
+    setLoading(true);
+    Promise.all([
+      api.get("/users"),
+      api.get("/locations"),
+      api.get("/roles"),
+    ])
+      .then(([uRes, lRes, rRes]) => {
+        setUsers(uRes.data);
+        setLocations(lRes.data);
+        setRoles(rRes.data);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -144,6 +156,8 @@ export default function UsersPage() {
   // Selected role (to know whether it is the system/owner role)
   const selectedRole = roles.find((r: any) => String(r.id) === form.roleId);
   const isSystemRole = !!selectedRole?.isSystem;
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

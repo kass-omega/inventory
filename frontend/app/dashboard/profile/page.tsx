@@ -1,5 +1,6 @@
 "use client";
 import { useAuth } from "@/context/AuthContext";
+import Loading from "@/app/components/Loading";
 import api from "@/lib/api";
 import { useEffect, useState } from "react";
 
@@ -47,7 +48,7 @@ export default function ProfilePage() {
     setTimeout(() => setPwMsg(""), 3000);
   };
 
-  if (!profile) return <div className="p-8 text-gray-400">Loading...</div>;
+  if (!profile) return <Loading className="py-24" />;
 
   return (
     <div className="max-w-lg mx-auto space-y-6">

@@ -1,5 +1,6 @@
 "use client";
 import { useToast } from "@/app/components/ToastProvider";
+import Loading from "@/app/components/Loading";
 import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
@@ -75,7 +76,16 @@ export default function CustomerForm({ onCreated, onUpdated, onCancel, initialDa
           disabled={loading}
           className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
         >
-          {loading ? "Saving..." : isEdit ? "Update Customer" : "Save Customer"}
+          {loading ? (
+            <span className="inline-flex items-center gap-2">
+              <Loading size="sm" />
+              Saving...
+            </span>
+          ) : isEdit ? (
+            "Update Customer"
+          ) : (
+            "Save Customer"
+          )}
         </button>
         <button
           type="button"

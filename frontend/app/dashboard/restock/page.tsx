@@ -4,6 +4,7 @@ import Modal from "@/app/components/Modal";
 import ProductForm from "@/app/components/ProductForm";
 import SearchableSelect from "@/app/components/SearchableSelect";
 import { useToast } from "@/app/components/ToastProvider";
+import Loading from "@/app/components/Loading";
 import { useAuth } from "@/context/AuthContext";
 import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
@@ -18,6 +19,7 @@ export default function RestockPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [stores, setStores] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // Product filters
   const [search, setSearch] = useState("");
@@ -33,10 +35,15 @@ export default function RestockPage() {
   const [showProductModal, setShowProductModal] = useState(false);
 
   const fetchProducts = async () => {
-    const res = await api.get(
-      `/products?search=${search}&categoryId=${categoryFilter}`,
-    );
-    setProducts(res.data);
+    setLoading(true);
+    try {
+      const res = await api.get(
+        `/products?search=${search}&categoryId=${categoryFilter}`,
+      );
+      setProducts(res.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -112,6 +119,8 @@ export default function RestockPage() {
     handleProductChange(String(newProduct.id));
     setShowProductModal(false);
   };
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

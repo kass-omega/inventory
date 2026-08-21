@@ -5,6 +5,7 @@ import SearchableSelect from "@/app/components/SearchableSelect";
 import { getDateRange } from "@/app/components/DateFilter";
 import FilterPanel from "@/app/components/FilterPanel";
 import Modal from "@/app/components/Modal";
+import Loading from "@/app/components/Loading";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useAuth } from "@/context/AuthContext";
@@ -39,6 +40,7 @@ export default function SalesPage() {
   const toast = useToast();
   const confirm = useConfirm();
   const [sales, setSales] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
@@ -104,8 +106,13 @@ export default function SalesPage() {
     (isOwner || (user?.locationType === "SHOP" && user?.locationId === r.shopId));
 
   const fetchSales = async () => {
-    const res = await api.get("/sales");
-    setSales(res.data);
+    setLoading(true);
+    try {
+      const res = await api.get("/sales");
+      setSales(res.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Returns helpers: refunded amount and refunded cost for a sale.
@@ -499,6 +506,8 @@ export default function SalesPage() {
         p.sku.toLowerCase().includes(term),
     );
   }, [products, search]);
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

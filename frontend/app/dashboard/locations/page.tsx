@@ -4,12 +4,14 @@ import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import api, { markHandled } from "@/lib/api";
+import Loading from "@/app/components/Loading";
 import { useEffect, useState } from "react";
 
 export default function LocationsPage() {
   const toast = useToast();
   const confirm = useConfirm();
   const [locations, setLocations] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ name: "", type: "SHOP", categoryId: "" });
   const [editing, setEditing] = useState<any>(null);
   const [showModal, setShowModal] = useState(false);
@@ -17,8 +19,13 @@ export default function LocationsPage() {
   const [newCategory, setNewCategory] = useState("");
 
   const fetchLocs = async () => {
-    const res = await api.get("/locations");
-    setLocations(res.data);
+    setLoading(true);
+    try {
+      const res = await api.get("/locations");
+      setLocations(res.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -72,6 +79,8 @@ export default function LocationsPage() {
       toast.error("Failed to add category.");
     }
   };
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

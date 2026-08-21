@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/context/AuthContext";
 import api, { markHandled } from "@/lib/api";
+import Loading from "../components/Loading";
 import { useState } from "react";
 
 interface DemoAccount {
@@ -124,7 +125,7 @@ export default function LoginPage() {
             >
               {loading ? (
                 <span className="inline-flex items-center gap-2">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  <Loading size="sm" />
                   Signing in…
                 </span>
               ) : (

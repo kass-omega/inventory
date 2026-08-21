@@ -1,5 +1,6 @@
 "use client";
 import Modal from "@/app/components/Modal";
+import Loading from "@/app/components/Loading";
 import ProductForm from "@/app/components/ProductForm";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
@@ -37,6 +38,7 @@ export default function ProductsPage() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [qrProduct, setQrProduct] = useState<any>(null);
   const [tab, setTab] = useState<"products" | "categories">("products");
+  const [loading, setLoading] = useState(true);
   const [detailProduct, setDetailProduct] = useState<any>(null);
 
   const [form, setForm] = useState<any>({
@@ -50,10 +52,15 @@ export default function ProductsPage() {
   const [attrs, setAttrs] = useState([{ key: "", value: "" }]);
 
   const fetchProducts = async () => {
-    const res = await api.get(
-      `/products?search=${search}&categoryId=${categoryFilter}`,
-    );
-    setProducts(res.data);
+    setLoading(true);
+    try {
+      const res = await api.get(
+        `/products?search=${search}&categoryId=${categoryFilter}`,
+      );
+      setProducts(res.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchCategories = async () => {
@@ -197,6 +204,8 @@ export default function ProductsPage() {
     setQrProduct(p);
     setShowQrModal(true);
   };
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

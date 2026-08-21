@@ -1,5 +1,6 @@
 "use client";
 import api from "@/lib/api";
+import Loading from "@/app/components/Loading";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useEffect, useState } from "react";
@@ -7,13 +8,19 @@ import { useEffect, useState } from "react";
 export default function PriceHistoryPage() {
   const confirm = useConfirm();
   const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<any>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ newBuyPrice: 0, newSellPrice: 0 });
 
   const fetchHistory = async () => {
-    const res = await api.get("/price-history");
-    setHistory(res.data);
+    setLoading(true);
+    try {
+      const res = await api.get("/price-history");
+      setHistory(res.data);
+    } finally {
+      setLoading(false);
+    }
   };
   useEffect(() => {
     fetchHistory();
@@ -41,6 +48,8 @@ export default function PriceHistoryPage() {
     await api.delete(`/price-history/${id}`);
     fetchHistory();
   };
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

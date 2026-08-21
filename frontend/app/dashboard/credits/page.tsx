@@ -2,6 +2,7 @@
 import CreditSaleForm from "@/app/components/CreditSaleForm";
 import CustomerForm from "@/app/components/CustomerForm";
 import Modal from "@/app/components/Modal";
+import Loading from "@/app/components/Loading";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
@@ -17,6 +18,7 @@ export default function CreditsPage() {
   const router = useRouter();
   const isOwner = user?.isSuperuser === true;
   const [customers, setCustomers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [locations, setLocations] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [locationFilter, setLocationFilter] = useState(
@@ -30,11 +32,16 @@ export default function CreditsPage() {
   const [showSaleModal, setShowSaleModal] = useState(false);
 
   const fetchCustomers = async () => {
-    const shopId = locationFilter || (isOwner ? "" : user?.locationId);
-    const params = new URLSearchParams();
-    if (shopId) params.set("shopId", String(shopId));
-    const res = await api.get(`/customers?${params}`);
-    setCustomers(res.data);
+    setLoading(true);
+    try {
+      const shopId = locationFilter || (isOwner ? "" : user?.locationId);
+      const params = new URLSearchParams();
+      if (shopId) params.set("shopId", String(shopId));
+      const res = await api.get(`/customers?${params}`);
+      setCustomers(res.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -68,6 +75,8 @@ export default function CreditsPage() {
       toast.error("Failed to delete customer");
     }
   };
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

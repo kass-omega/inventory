@@ -3,6 +3,7 @@ import BarcodeScanner from "@/app/components/BarcodeScanner";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import FilterRow, { FilterField } from "@/app/components/FilterRow";
 import Modal from "@/app/components/Modal";
+import Loading from "@/app/components/Loading";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import SearchableSelect from "@/app/components/SearchableSelect";
 import { useToast } from "@/app/components/ToastProvider";
@@ -57,10 +58,17 @@ export default function RequestsPage() {
     {},
   );
 
+  const [loading, setLoading] = useState(true);
+
   const fetchRequests = async () => {
-    const query = `status=${statusFilter}&locationId=${locationFilter}&categoryId=${categoryFilter}&productId=${productFilter}&startDate=${startDate}&endDate=${endDate}`;
-    const res = await api.get(`/requests?${query}`);
-    setRequests(res.data);
+    setLoading(true);
+    try {
+      const query = `status=${statusFilter}&locationId=${locationFilter}&categoryId=${categoryFilter}&productId=${productFilter}&startDate=${startDate}&endDate=${endDate}`;
+      const res = await api.get(`/requests?${query}`);
+      setRequests(res.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -461,6 +469,8 @@ export default function RequestsPage() {
     "AWAITING_CONFIRMATION",
     "CLOSED",
   ];
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

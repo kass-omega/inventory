@@ -1,5 +1,6 @@
 "use client";
 import api from "@/lib/api";
+import Loading from "./Loading";
 import { useEffect, useState } from "react";
 import {
   Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
@@ -24,9 +25,11 @@ export default function SalesReport({ startDate, endDate, categoryId, locationId
   const [paymentBreakdown, setPaymentBreakdown] = useState<any[]>([]);
   const [unified, setUnified] = useState<any>(null);
   const [view, setView] = useState<"summary" | "charts">("charts");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const query = `startDate=${startDate}&endDate=${endDate}&categoryId=${categoryId}&search=${search}&locationId=${locationId}`;
+    setLoading(true);
     Promise.all([
       api.get(`/reports/sales-summary?${query}`).catch(() => ({ data: null })),
       api.get(`/reports/sales-trend?${query}`).catch(() => ({ data: [] })),
@@ -39,10 +42,10 @@ export default function SalesReport({ startDate, endDate, categoryId, locationId
       setMostSold(m.data);
       setPaymentBreakdown(p.data);
       setUnified(u.data);
-    });
+    }).finally(() => setLoading(false));
   }, [startDate, endDate, categoryId, locationId, search]);
 
-  if (!unified && !summary) return <div className="p-8 text-gray-400">Loading...</div>;
+  if (loading || (!unified && !summary)) return <Loading className="py-24" />;
 
   return (
     <div className="space-y-6">

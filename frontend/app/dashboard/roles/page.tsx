@@ -5,6 +5,7 @@ import { useToast } from "@/app/components/ToastProvider";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import api, { markHandled } from "@/lib/api";
 import { useEffect, useMemo, useState } from "react";
+import Loading from "../../components/Loading";
 import Modal from "../../components/Modal";
 
 interface Role {
@@ -36,10 +37,20 @@ export default function RolesPage() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const load = () => {
-    api.get("/roles").then((r) => setRoles(r.data));
-    api.get("/roles/permissions").then((r) => setPermissions(r.data));
+    setLoading(true);
+    Promise.all([
+      api.get("/roles"),
+      api.get("/roles/permissions"),
+    ])
+      .then(([rRes, pRes]) => {
+        setRoles(rRes.data);
+        setPermissions(pRes.data);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => {
@@ -141,6 +152,8 @@ export default function RolesPage() {
       </div>
     );
   }
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>

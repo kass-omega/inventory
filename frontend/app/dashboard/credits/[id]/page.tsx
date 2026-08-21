@@ -1,6 +1,7 @@
 "use client";
 import CreditSaleForm from "@/app/components/CreditSaleForm";
 import Modal from "@/app/components/Modal";
+import Loading from "@/app/components/Loading";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
@@ -208,7 +209,7 @@ export default function CustomerDetailPage() {
     (cs: any) => cs.sale?.id && (cs.sale.remainingAmount ?? 0) > 0,
   );
 
-  if (!customer) return <div className="p-8 text-gray-400">Loading...</div>;
+  if (!customer) return <Loading className="py-24" />;
 
   return (
     <div>

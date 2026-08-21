@@ -2,6 +2,7 @@
 import { getDateRange } from "@/app/components/DateFilter";
 import FilterPanel from "@/app/components/FilterPanel";
 import Modal from "@/app/components/Modal";
+import Loading from "@/app/components/Loading";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
@@ -27,23 +28,29 @@ export default function PurchasesPage() {
   const [locations, setLocations] = useState<any[]>([]);
   const [form, setForm] = useState({ productName: "", quantity: 1, unitPrice: 0, sellPrice: 0, notes: "", paymentMethodId: "" });
   const [loading, setLoading] = useState(false);
+  const [fetching, setFetching] = useState(true);
   const [daySheet, setDaySheet] = useState<any>(null);
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
 
   const fetchPurchases = async () => {
-    const params = new URLSearchParams();
-    if (statusFilter) params.set("status", statusFilter);
-    if (search) params.set("search", search);
-    if (startDate) params.set("startDate", startDate);
-    if (endDate) params.set("endDate", endDate);
-    if (shopFilter) params.set("shopId", shopFilter);
-    const query = params.toString();
-    const [res, sres] = await Promise.all([
-      api.get(`/purchases${query ? "?" + query : ""}`),
-      api.get(`/purchases/stats?${query}`),
-    ]);
-    setPurchases(res.data);
-    setStats(sres.data);
+    setFetching(true);
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter) params.set("status", statusFilter);
+      if (search) params.set("search", search);
+      if (startDate) params.set("startDate", startDate);
+      if (endDate) params.set("endDate", endDate);
+      if (shopFilter) params.set("shopId", shopFilter);
+      const query = params.toString();
+      const [res, sres] = await Promise.all([
+        api.get(`/purchases${query ? "?" + query : ""}`),
+        api.get(`/purchases/stats?${query}`),
+      ]);
+      setPurchases(res.data);
+      setStats(sres.data);
+    } finally {
+      setFetching(false);
+    }
   };
   useEffect(() => { fetchPurchases(); }, [statusFilter, search, startDate, endDate, shopFilter]);
 
@@ -71,6 +78,8 @@ export default function PurchasesPage() {
   const handleReject = async (id: number) => { try { await api.patch(`/purchases/${id}/reject`); fetchPurchases(); } catch (err: any) { markHandled(err); toast.error("Failed"); } };
 
   const badge = (s: string) => (<span className={"px-2 py-0.5 text-xs rounded-full font-semibold " + (s==="PENDING"?"bg-yellow-100 text-yellow-800":s==="APPROVED"?"bg-green-100 text-green-800":"bg-red-100 text-red-800")}>{s}</span>);
+
+  if (fetching) return <Loading className="py-24" />;
 
   return (
     <div>
@@ -186,7 +195,16 @@ export default function PurchasesPage() {
             <input value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} className="border p-2 rounded-lg w-full text-sm"/>
           </div>
           <div className="flex gap-2 mt-2">
-            <button type="submit" disabled={loading} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">{loading?"Saving...":"Submit"}</button>
+            <button type="submit" disabled={loading} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
+              {loading ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loading size="sm" />
+                  Saving...
+                </span>
+              ) : (
+                "Submit"
+              )}
+            </button>
             <button type="button" onClick={()=>setShowForm(false)} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-300">Cancel</button>
           </div>
         </form>

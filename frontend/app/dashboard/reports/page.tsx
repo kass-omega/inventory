@@ -3,6 +3,7 @@ import { getDateRange } from "@/app/components/DateFilter";
 import FilterPanel from "@/app/components/FilterPanel";
 import Modal from "@/app/components/Modal";
 import SalesReport from "@/app/components/SalesReport";
+import Loading from "@/app/components/Loading";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
 import api, { markHandled } from "@/lib/api";
@@ -52,6 +53,7 @@ export default function ReportsPage() {
   });
 
   const isOwner = user?.isSuperuser === true;
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.get("/categories").then((r) => setCategories(r.data));
@@ -65,19 +67,35 @@ export default function ReportsPage() {
 
   useEffect(() => {
     const query = `search=${search}&categoryId=${category}&locationId=${location}&startDate=${startDate}&endDate=${endDate}`;
+    setLoading(true);
+
+    const finish = () => setLoading(false);
 
     if (tab === "inventory") {
       api
         .get(`/reports/inventory-breakdown?${query}`)
-        .then((r) => setInventoryData(r.data));
+        .then((r) => setInventoryData(r.data))
+        .finally(finish);
     } else if (tab === "sales" && isOwner) {
       // handled by SalesReport component
+      setLoading(false);
     } else if (tab === "low-stock") {
-      api.get(`/reports/low-stock?${query}`).then((r) => setLowStock(r.data));
+      api
+        .get(`/reports/low-stock?${query}`)
+        .then((r) => setLowStock(r.data))
+        .finally(finish);
     } else if (tab === "dead-stock") {
-      api.get(`/reports/dead-stock?${query}`).then((r) => setDeadStock(r.data));
+      api
+        .get(`/reports/dead-stock?${query}`)
+        .then((r) => setDeadStock(r.data))
+        .finally(finish);
     } else if (tab === "audit-trail" && isOwner) {
-      api.get("/reports/audit-trail").then((r) => setAuditTrail(r.data));
+      api
+        .get("/reports/audit-trail")
+        .then((r) => setAuditTrail(r.data))
+        .finally(finish);
+    } else {
+      setLoading(false);
     }
   }, [tab, search, category, location, startDate, endDate, user, isOwner]);
 
@@ -169,6 +187,8 @@ export default function ReportsPage() {
         return null;
     }
   })();
+
+  if (loading) return <Loading className="py-24" />;
 
   return (
     <div>
