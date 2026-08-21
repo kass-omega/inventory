@@ -2,55 +2,170 @@
 
 import { useAuth } from "@/context/AuthContext";
 import api from "@/lib/api";
-import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+interface Notification {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  productId: number | null;
+  locationId: number | null;
+  isRead: boolean;
+  createdAt: string;
+}
+
+// How often to poll for new notifications (fallback when SSE is unavailable).
+const POLL_INTERVAL_MS = 15000;
+// How long each popup stays on screen before auto-dismissing.
+const POPUP_TTL_MS = 8000;
+
+function getIcon(type: string) {
+  switch (type) {
+    case "LOW_STOCK":
+      return "⚠️";
+    case "REQUEST_STATUS":
+      return "📦";
+    default:
+      return "🔔";
+  }
+}
+
+function getLink(n: Notification) {
+  if (n.type === "REQUEST_STATUS") return "/dashboard/requests";
+  if (n.type === "LOW_STOCK") return "/dashboard/reports?tab=low-stock";
+  return null;
+}
+
+/**
+ * Popup that appears the moment a NEW notification arrives (via SSE, polling,
+ * or returning to the tab). Existing notifications are seeded silently so the
+ * popup only fires for genuinely new ones.
+ */
 export default function NotificationToast() {
   const { user } = useAuth();
-  const [unreadCount, setUnreadCount] = useState(0);
-  const [dismissed, setDismissed] = useState(false);
+  const router = useRouter();
+  const [popups, setPopups] = useState<Notification[]>([]);
+  const seenIds = useRef<Set<number>>(new Set());
+  const initialized = useRef(false);
+
+  const checkForNew = useCallback(async () => {
+    if (!user) return;
+    try {
+      const res = await api.get("/notifications");
+      const list: Notification[] = res.data || [];
+
+      // First load: remember what already exists so we don't popup for old items.
+      if (!initialized.current) {
+        list.forEach((n) => seenIds.current.add(n.id));
+        initialized.current = true;
+        return;
+      }
+
+      const fresh = list
+        .filter((n) => !seenIds.current.has(n.id))
+        .sort((a, b) => a.id - b.id)
+        .slice(0, 3);
+
+      if (fresh.length === 0) return;
+
+      fresh.forEach((n) => seenIds.current.add(n.id));
+      setPopups((prev) => [...prev, ...fresh]);
+
+      // Auto-dismiss each popup after the TTL.
+      fresh.forEach((n) => {
+        setTimeout(
+          () => setPopups((prev) => prev.filter((p) => p.id !== n.id)),
+          POPUP_TTL_MS,
+        );
+      });
+
+      // When the tab is in the background, also fire a system notification
+      // (the user may not be looking at the app).
+      if (
+        typeof document !== "undefined" &&
+        document.hidden &&
+        "Notification" in window &&
+        Notification.permission === "granted"
+      ) {
+        const latest = fresh[fresh.length - 1];
+        new Notification(latest.title, { body: latest.message });
+      }
+    } catch (err) {
+      console.error("Failed to fetch notifications:", err);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
+    checkForNew();
 
-    const fetch = async () => {
-      try {
-        const res = await api.get("/notifications/unread-count");
-        const count: number = res.data.count;
-        setUnreadCount(count);
-        if (count === 0) setDismissed(false);
-      } catch (err) {
-        console.error("Failed to fetch notification toast count:", err);
-      }
+    const baseUrl =
+      process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:3000";
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource(`${baseUrl}/notifications/stream`, {
+        withCredentials: true,
+      });
+      es.onmessage = () => checkForNew();
+      es.onerror = () => checkForNew();
+    } catch {
+      // SSE unsupported — polling fallback below still covers us.
+    }
+
+    const interval = setInterval(checkForNew, POLL_INTERVAL_MS);
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") checkForNew();
     };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
 
-    fetch();
-    const interval = setInterval(fetch, 30000);
-    return () => clearInterval(interval);
-  }, [user]);
+    return () => {
+      clearInterval(interval);
+      es?.close();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onVisibility);
+    };
+  }, [user, checkForNew]);
 
-  if (unreadCount === 0 || dismissed) return null;
+  if (popups.length === 0) return null;
 
   return (
-    <div className="fixed top-2 right-2 left-2 sm:top-4 sm:right-4 sm:left-auto z-[100] max-w-sm">
-      <div className="bg-amber-50 border border-amber-300 rounded-xl shadow-lg p-4 flex items-start gap-3">
-        <span className="text-2xl flex-shrink-0">⚠️</span>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-amber-900">
-            Low Stock Alert
-          </p>
-          <p className="text-xs text-amber-700 mt-0.5">
-            You have {unreadCount} unread notification
-            {unreadCount > 1 ? "s" : ""}. Check the bell icon for details.
-          </p>
-        </div>
-        <button
-          onClick={() => setDismissed(true)}
-          className="flex-shrink-0 text-amber-400 hover:text-amber-600 text-lg leading-none"
-          aria-label="Dismiss"
-        >
-          ×
-        </button>
-      </div>
+    <div className="fixed top-2 right-2 left-2 sm:top-4 sm:right-4 sm:left-auto z-[100] max-w-sm flex flex-col gap-2">
+      {popups.map((n) => {
+        const link = getLink(n);
+        return (
+          <div
+            key={n.id}
+            onClick={() => {
+              if (link) router.push(link);
+              setPopups((prev) => prev.filter((p) => p.id !== n.id));
+            }}
+            className="bg-amber-50 border border-amber-300 rounded-xl shadow-lg p-4 flex items-start gap-3 cursor-pointer"
+          >
+            <span className="text-2xl flex-shrink-0">{getIcon(n.type)}</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-amber-900">{n.title}</p>
+              <p className="text-xs text-amber-700 mt-0.5 line-clamp-2">
+                {n.message}
+              </p>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setPopups((prev) => prev.filter((p) => p.id !== n.id));
+              }}
+              className="flex-shrink-0 text-amber-400 hover:text-amber-600 text-lg leading-none"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
+

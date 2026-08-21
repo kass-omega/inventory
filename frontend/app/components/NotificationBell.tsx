@@ -20,6 +20,9 @@ interface Notification {
   createdAt: string;
 }
 
+// How often to poll for notifications (fallback when SSE is unavailable).
+const POLL_INTERVAL_MS = 15000;
+
 export default function NotificationBell() {
   const { user } = useAuth();
   const router = useRouter();
@@ -56,22 +59,43 @@ export default function NotificationBell() {
     const baseUrl =
       process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:3000";
     let es: EventSource | null = null;
-    es = new EventSource(`${baseUrl}/notifications/stream`, {
-      withCredentials: true,
-    });
-    es.onmessage = () => {
-      fetchUnreadCount();
-      fetchNotifications();
-    };
+    try {
+      es = new EventSource(`${baseUrl}/notifications/stream`, {
+        withCredentials: true,
+      });
+      es.onmessage = () => {
+        fetchUnreadCount();
+        fetchNotifications();
+      };
+      es.onerror = () => {
+        fetchUnreadCount();
+        fetchNotifications();
+      };
+    } catch {
+      // SSE unsupported — polling fallback below still covers us.
+    }
 
-    // Poll every 60 seconds as a fallback
+    // Poll as a fallback (and to catch anything SSE missed).
     const interval = setInterval(() => {
       fetchUnreadCount();
-    }, 60000);
+      fetchNotifications();
+    }, POLL_INTERVAL_MS);
+
+    // Refresh immediately when the user returns to the tab.
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        fetchUnreadCount();
+        fetchNotifications();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
 
     return () => {
       clearInterval(interval);
       es?.close();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onVisibility);
     };
   }, [user, fetchUnreadCount, fetchNotifications]);
 
