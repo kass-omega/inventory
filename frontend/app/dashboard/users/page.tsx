@@ -1,5 +1,5 @@
 "use client";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useToast } from "@/app/components/ToastProvider";
@@ -93,6 +93,7 @@ export default function UsersPage() {
       toast.success("User deleted");
       api.get("/users").then((res) => setUsers(res.data));
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Failed to delete user");
     }
   };
@@ -122,6 +123,7 @@ export default function UsersPage() {
       setNewPassword("");
       setTimeout(() => setResetUser(null), 1200);
     } catch (err: any) {
+      markHandled(err);
       setResetError(
         err.response?.data?.message || "Failed to update password",
       );
@@ -134,6 +136,7 @@ export default function UsersPage() {
       await api.patch(`/users/${u.id}/status`, { status: next });
       api.get("/users").then((res) => setUsers(res.data));
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Failed to update status");
     }
   };

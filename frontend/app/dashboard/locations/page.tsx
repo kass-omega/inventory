@@ -3,7 +3,7 @@ import Modal from "@/app/components/Modal";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 export default function LocationsPage() {
@@ -67,7 +67,8 @@ export default function LocationsPage() {
       setCategories((prev) => [...prev, res.data]);
       setForm({ ...form, categoryId: String(res.data.id) });
       setNewCategory("");
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to add category.");
     }
   };

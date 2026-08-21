@@ -63,8 +63,70 @@ api.interceptors.response.use(
         }
       }
     }
+    // Surface API errors in the UI unless the caller already handled them
+    // (pages that show their own toast call markHandled(err) in catch). A 401
+    // from the background /auth/me session check is expected when logged out.
+    const isSessionCheck =
+      err?.config?.method?.toLowerCase() === "get" &&
+      String(err?.config?.url ?? "").includes("/auth/me");
+    if (!err?.handled && !isSessionCheck) {
+      setTimeout(() => {
+        if (!err?.handled) emitApiError(err);
+      }, 0);
+    }
     return Promise.reject(err);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Global API error reporting
+// ---------------------------------------------------------------------------
+
+// Extract a human-friendly message from an API error.
+export function getApiErrorMessage(err: any): string {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  let message = data?.message;
+  if (Array.isArray(message)) message = message.join(", ");
+  if (typeof message === "string" && message.trim()) {
+    // Replace the generic Nest 403/401 messages with clearer guidance, but keep
+    // specific backend messages (e.g. "Only the dispatching store can...").
+    if (status === 403 && (message === "Forbidden resource" || message === "Forbidden")) {
+      return "You don't have permission to perform this action.";
+    }
+    if (status === 401 && message === "Unauthorized") {
+      return "Your session has expired. Please log in again.";
+    }
+    return message;
+  }
+  if (status === 403)
+    return "You don't have permission to perform this action.";
+  if (status === 401)
+    return "Your session has expired. Please log in again.";
+  if (err?.code === "ECONNABORTED")
+    return "The request timed out. Please try again.";
+  if (!err?.response) return err?.message || "Network error. Please try again.";
+  return `Request failed (${status}). Please try again.`;
+}
+
+// Mark an error as already handled so the global handler doesn't toast twice.
+export function markHandled(err: any) {
+  if (err && typeof err === "object") err.handled = true;
+}
+
+type ApiErrorListener = (message: string, err: any) => void;
+const errorListeners = new Set<ApiErrorListener>();
+
+export function onApiError(listener: ApiErrorListener) {
+  errorListeners.add(listener);
+  return () => {
+    errorListeners.delete(listener);
+  };
+}
+
+function emitApiError(err: any) {
+  const message = getApiErrorMessage(err);
+  errorListeners.forEach((listener) => listener(message, err));
+}
 
 export default api;

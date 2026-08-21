@@ -6,7 +6,7 @@ import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -63,7 +63,8 @@ export default function CreditsPage() {
       await api.delete(`/customers/${id}`);
       fetchCustomers();
       toast.success("Customer deleted");
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to delete customer");
     }
   };

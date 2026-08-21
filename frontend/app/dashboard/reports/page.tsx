@@ -5,7 +5,7 @@ import Modal from "@/app/components/Modal";
 import SalesReport from "@/app/components/SalesReport";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -96,7 +96,8 @@ export default function ReportsPage() {
       setShowReqModal(false);
       setReqForm({ productId: "", productName: "", storeId: "", quantity: 1 });
       toast.success("Request submitted!");
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to create request.");
     }
   };
@@ -120,7 +121,8 @@ export default function ReportsPage() {
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Export failed.");
     }
   };

@@ -1,5 +1,12 @@
 "use client";
-import { createContext, useCallback, useContext, useState } from "react";
+import { onApiError } from "@/lib/api";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
 interface Toast { id: number; message: string; type: "success" | "error" | "info" }
 
@@ -24,6 +31,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     setToasts((prev) => [...prev, { id: tid, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== tid)), 3000);
   }, []);
+
+  // Show a toast for every API error that isn't already handled by a page,
+  // so permission-denied and other failures are always visible to the user.
+  useEffect(() => {
+    return onApiError((message) => add(message, "error"));
+  }, [add]);
 
   return (
     <ToastCtx.Provider value={{ success: (m) => add(m, "success"), error: (m) => add(m, "error"), info: (m) => add(m, "info") }}>

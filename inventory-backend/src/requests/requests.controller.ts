@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -47,6 +48,16 @@ export class RequestsController {
     @Req() req: RequestWithUser,
   ) {
     return this.service.sendBack(id, req.user);
+  }
+
+  // Owner or request creator deletes a request that hasn't started dispatching.
+  @Delete(':id')
+  @Permissions('requests.create')
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.service.remove(id, req.user);
   }
 
   @Get()

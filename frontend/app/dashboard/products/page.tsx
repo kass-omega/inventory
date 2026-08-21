@@ -5,7 +5,7 @@ import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { QRCodeSVG } from "qrcode.react";
 import CategoriesManager from "@/app/components/CategoriesManager";
 import ProductDetailModal from "@/app/components/ProductDetailModal";
@@ -174,7 +174,8 @@ export default function ProductsPage() {
       setShowAdjustModal(false);
       setAdjusting(null);
       fetchProducts();
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to adjust stock.");
     }
   };
@@ -187,6 +188,7 @@ export default function ProductsPage() {
       toast.success("Product deleted");
       fetchProducts();
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Failed to delete product");
     }
   };

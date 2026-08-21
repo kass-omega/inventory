@@ -1,6 +1,6 @@
 "use client";
 import { useToast } from "@/app/components/ToastProvider";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 interface Props {
@@ -41,7 +41,8 @@ export default function CustomerForm({ onCreated, onUpdated, onCancel, initialDa
         });
         onCreated(res.data);
       }
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error(isEdit ? "Failed to update customer" : "Failed to create customer");
     } finally {
       setLoading(false);

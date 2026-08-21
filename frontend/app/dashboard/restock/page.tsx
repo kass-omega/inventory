@@ -4,7 +4,7 @@ import Modal from "@/app/components/Modal";
 import ProductForm from "@/app/components/ProductForm";
 import SearchableSelect from "@/app/components/SearchableSelect";
 import { useToast } from "@/app/components/ToastProvider";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 export default function RestockPage() {
@@ -82,6 +82,7 @@ export default function RestockPage() {
         newSellPrice: 0,
       });
     } catch (err) {
+      markHandled(err);
       toast.error("Error restocking.");
     }
   };

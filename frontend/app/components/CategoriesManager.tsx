@@ -2,7 +2,7 @@
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 export default function CategoriesManager() {
@@ -33,7 +33,8 @@ export default function CategoriesManager() {
       setName("");
       fetchCategories();
       toast.success("Category created");
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to create category");
     }
   };
@@ -51,7 +52,8 @@ export default function CategoriesManager() {
       setEditName("");
       fetchCategories();
       toast.success("Category updated");
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to update category");
     }
   };
@@ -64,6 +66,7 @@ export default function CategoriesManager() {
       fetchCategories();
       toast.success("Category deleted");
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Failed to delete");
     }
   };

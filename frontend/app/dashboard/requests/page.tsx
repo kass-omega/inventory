@@ -7,7 +7,7 @@ import SearchableSelect from "@/app/components/SearchableSelect";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 export default function RequestsPage() {
@@ -131,6 +131,7 @@ export default function RequestsPage() {
       setReqItems([{ productId: "", quantity: "", categoryId: "" }]);
       fetchRequests();
     } catch (err: any) {
+      markHandled(err);
       toast.error(
         err.response?.data?.message || "Failed to create request.",
       );
@@ -223,6 +224,7 @@ export default function RequestsPage() {
       setSelectedReq(null);
       fetchRequests();
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Failed to update approvals.");
     }
   };
@@ -235,6 +237,7 @@ export default function RequestsPage() {
       setSelectedReq(null);
       fetchRequests();
     } catch (err: any) {
+      markHandled(err);
       toast.error(
         err.response?.data?.message ||
           "Failed to dispatch items. Check stock levels.",
@@ -272,6 +275,7 @@ export default function RequestsPage() {
       fetchRequests();
       setSelectedReq(null);
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Confirmation failed.");
     }
   };
@@ -329,9 +333,43 @@ export default function RequestsPage() {
       toast.success("Request sent back to the creator.");
       fetchRequests();
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Failed to send request back.");
     }
   };
+
+  const handleDeleteRequest = async (req: any) => {
+    const ok = await confirm(
+      `Delete request #${req.id}? This cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await api.delete(`/requests/${req.id}`);
+      toast.success(`Request #${req.id} deleted.`);
+      fetchRequests();
+    } catch (err: any) {
+      markHandled(err);
+      toast.error(err.response?.data?.message || "Failed to delete request.");
+    }
+  };
+
+  // Direction labels for the From/To columns and the type badge.
+  const fromLabel = (r: any) =>
+    r.requestType === "STORE_TO_OWNER"
+      ? r.store?.name
+      : r.requestType === "STORE_TO_STORE"
+        ? r.fromStore?.name
+        : r.shop?.name || "—";
+  const toLabel = (r: any) =>
+    r.requestType === "STORE_TO_OWNER"
+      ? "Owner"
+      : r.store?.name || "—";
+  const typeLabel = (r: any) =>
+    r.requestType === "STORE_TO_OWNER"
+      ? "Store → Owner"
+      : r.requestType === "STORE_TO_STORE"
+        ? "Store → Store"
+        : "Shop → Store";
 
   const statuses = [
     "PENDING",
@@ -448,8 +486,8 @@ export default function RequestsPage() {
             <tr>
               <th className="p-2 sm:p-3 md:p-4">ID</th>
               <th className="p-2 sm:p-3 md:p-4">Type</th>
-              <th className="p-2 sm:p-3 md:p-4">Shop</th>
-              <th className="p-2 sm:p-3 md:p-4">Store</th>
+              <th className="p-2 sm:p-3 md:p-4">From</th>
+              <th className="p-2 sm:p-3 md:p-4">To</th>
               <th className="p-2 sm:p-3 md:p-4">
                 <span className="block">Items Summary</span>
                 <span className="mt-0.5 flex text-[10px] uppercase font-medium text-gray-400">
@@ -470,17 +508,19 @@ export default function RequestsPage() {
                     className={`px-3 py-0.5 sm:py-1 text-[10px] sm:text-xs rounded-full font-semibold ${
                       r.requestType === "STORE_TO_OWNER"
                         ? "bg-purple-100 text-purple-800"
-                        : "bg-indigo-100 text-indigo-800"
+                        : r.requestType === "STORE_TO_STORE"
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-indigo-100 text-indigo-800"
                     }`}
                   >
-                    {r.requestType === "STORE_TO_OWNER" ? "Store" : "Shop"}
+                    {typeLabel(r)}
                   </span>
                 </td>
-                <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm">
-                  {r.shop?.name || "—"}
+                <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm font-medium">
+                  {fromLabel(r)}
                 </td>
                 <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm text-gray-600">
-                  {r.store?.name}
+                  {toLabel(r)}
                 </td>
                 <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm text-gray-600">
                   <table className="w-full">
@@ -527,6 +567,15 @@ export default function RequestsPage() {
                               label: "Send Back",
                               onClick: () => handleSendBack(r),
                               color: "text-amber-600",
+                            },
+                          ]
+                        : []),
+                      ...(canEditRequest(r)
+                        ? [
+                            {
+                              label: "Delete",
+                              onClick: () => handleDeleteRequest(r),
+                              color: "text-red-500",
                             },
                           ]
                         : []),
@@ -837,6 +886,7 @@ export default function RequestsPage() {
                       fetchRequests();
                       setSelectedReq(null);
                     } catch (err: any) {
+                      markHandled(err);
                       toast.error(err.response?.data?.message || "Failed.");
                     }
                   }}

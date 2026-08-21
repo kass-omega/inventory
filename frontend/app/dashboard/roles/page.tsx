@@ -3,7 +3,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useToast } from "@/app/components/ToastProvider";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useMemo, useState } from "react";
 import Modal from "../../components/Modal";
 
@@ -117,6 +117,7 @@ export default function RolesPage() {
         setMsg("");
       }, 700);
     } catch (e: any) {
+      markHandled(e);
       setError(e.response?.data?.message || "Failed to save role");
     }
   };
@@ -128,6 +129,7 @@ export default function RolesPage() {
       await api.delete(`/roles/${role.id}`);
       load();
     } catch (e: any) {
+      markHandled(e);
       toast.error(e.response?.data?.message || "Failed to delete role");
     }
   };

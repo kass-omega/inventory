@@ -8,7 +8,7 @@ import Modal from "@/app/components/Modal";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/app/components/ToastProvider";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useMemo, useState } from "react";
 
 interface Product {
@@ -284,7 +284,8 @@ export default function SalesPage() {
         });
       resetForm();
       fetchSales();
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Error processing sale.");
     }
   };
@@ -342,6 +343,7 @@ export default function SalesPage() {
       fetchSales();
       api.get("/sales/returns").then((r) => setReturns(r.data));
     } catch (err: any) {
+      markHandled(err);
       toast.error(err.response?.data?.message || "Failed to process return.");
     }
   };

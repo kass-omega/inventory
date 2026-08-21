@@ -1,6 +1,6 @@
 "use client";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 import { useToast } from "@/app/components/ToastProvider";
 
@@ -45,7 +45,7 @@ export default function ProductForm({ onProductCreated, onCancel }: ProductFormP
         quantity: form.quantity ? Number(form.quantity) : undefined,
       });
       onProductCreated(res.data);
-    } catch { toast.error("Error creating product."); }
+    } catch (err: any) { markHandled(err); toast.error("Error creating product."); }
   };
 
   const handleAddCategory = async (e: React.FormEvent) => {

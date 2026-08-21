@@ -314,6 +314,60 @@ export class RequestsService {
     });
   }
 
+  /**
+   * Owner or request creator deletes a request that hasn't started dispatching.
+   * Requests that have progressed (dispatch/receipt) or are closed cannot be
+   * deleted.
+   */
+  async remove(id: number, user: JwtPayload) {
+    const request = await this.prisma.stockRequest.findUnique({
+      where: { id },
+      include: { items: true },
+    });
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.status === RequestStatus.CLOSED) {
+      throw new BadRequestException('Cannot delete a closed request');
+    }
+
+    const canDelete = user.isSuperuser || request.createdById === user.sub;
+    if (!canDelete) {
+      throw new ForbiddenException(
+        'Only the owner or the request creator can delete this request',
+      );
+    }
+
+    const progressed = request.items.some(
+      (i) =>
+        i.quantityDispatched > 0 ||
+        i.quantityStored > 0 ||
+        i.status === RequestItemStatus.DISPATCHED ||
+        i.status === RequestItemStatus.STORED ||
+        i.status === RequestItemStatus.RECEIVED ||
+        i.status === RequestItemStatus.PARTIALLY_RECEIVED,
+    );
+    if (progressed) {
+      throw new BadRequestException(
+        'Cannot delete a request after dispatch has started',
+      );
+    }
+
+    await this.prisma.stockRequest.delete({ where: { id } });
+
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          userId: user.sub,
+          action: 'REQUEST_DELETED',
+          details: `Deleted request #${id}`,
+        },
+      });
+    } catch {
+      // audit logging must never break the flow
+    }
+
+    return { message: 'Request deleted' };
+  }
+
   async findAll(
     filters: {
       locationId?: string;

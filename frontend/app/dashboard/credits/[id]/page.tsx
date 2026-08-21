@@ -5,7 +5,7 @@ import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -75,7 +75,8 @@ export default function CustomerDetailPage() {
       setPaySaleId("");
 
       fetchCustomer();
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to record payment");
     }
   };
@@ -86,7 +87,8 @@ export default function CustomerDetailPage() {
     try {
       await api.delete(`/credit-sales/${id}`);
       fetchCustomer();
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to delete credit sale");
     }
   };
@@ -97,7 +99,8 @@ export default function CustomerDetailPage() {
     try {
       await api.delete(`/credit-payments/${id}`);
       fetchCustomer();
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to delete payment");
     }
   };
@@ -127,7 +130,8 @@ export default function CustomerDetailPage() {
       setEditPayMethodId("");
       setEditPaySaleId("");
       fetchCustomer();
-    } catch {
+    } catch (err: any) {
+      markHandled(err);
       toast.error("Failed to update payment");
     }
   };
@@ -146,35 +150,55 @@ export default function CustomerDetailPage() {
   }, [customer, productSearch]);
 
   const groupedSales = useMemo(() => {
+    // Normalize to a local calendar-day key (YYYY-MM-DD) so every credit sale
+    // made on the same date shares one group header, regardless of browser
+    // locale or time formatting.
+    const dayKey = (cs: any) => {
+      const d = new Date(cs.sale?.saleDate ?? cs.createdAt);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
+
     const groups: Record<string, any[]> = {};
-    let running = 0;
-    // Sort by createdAt desc
     [...filteredSales]
       .sort(
         (a, b) =>
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       )
       .forEach((cs) => {
-        const date = new Date(cs.createdAt).toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-        });
-        if (!groups[date]) groups[date] = [];
-        groups[date].push(cs);
+        const key = dayKey(cs);
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(cs);
       });
-    // Build with accumulated
+
+    // Newest date first
     const result: {
+      key: string;
       date: string;
       sales: any[];
       dayTotal: number;
       accumulated: number;
     }[] = [];
-    Object.entries(groups).forEach(([date, sales]) => {
-      const dayTotal = sales.reduce((s, cs) => s + cs.totalAmount, 0);
-      running += dayTotal;
-      result.push({ date, sales, dayTotal, accumulated: running });
-    });
+    let running = 0;
+    Object.entries(groups)
+      .sort((a, b) => (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0))
+      .forEach(([key, sales]) => {
+        const dayTotal = sales.reduce((s, cs) => s + cs.totalAmount, 0);
+        running += dayTotal;
+        const formatted = new Date(`${key}T00:00:00`).toLocaleDateString(
+          "en-US",
+          { year: "numeric", month: "short", day: "numeric" },
+        );
+        result.push({
+          key,
+          date: formatted,
+          sales,
+          dayTotal,
+          accumulated: running,
+        });
+      });
     return result;
   }, [filteredSales]);
 

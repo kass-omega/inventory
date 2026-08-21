@@ -5,7 +5,7 @@ import Modal from "@/app/components/Modal";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 type DatePreset = "today" | "week" | "month" | "year";
@@ -65,10 +65,10 @@ export default function PurchasesPage() {
     try {
       await api.post("/purchases", { productName: form.productName, quantity: Number(form.quantity), unitPrice: Number(form.unitPrice), sellPrice: Number(form.sellPrice), notes: form.notes || undefined, paymentMethodId: form.paymentMethodId ? Number(form.paymentMethodId) : undefined });
       setShowForm(false); setForm({ productName: "", quantity: 1, unitPrice: 0, sellPrice: 0, notes: "", paymentMethodId: "" }); fetchPurchases();
-    } catch { toast.error("Failed"); } finally { setLoading(false); }
+    } catch (err: any) { markHandled(err); toast.error("Failed"); } finally { setLoading(false); }
   };
-  const handleApprove = async (id: number) => { try { await api.patch(`/purchases/${id}/approve`); fetchPurchases(); } catch { toast.error("Failed"); } };
-  const handleReject = async (id: number) => { try { await api.patch(`/purchases/${id}/reject`); fetchPurchases(); } catch { toast.error("Failed"); } };
+  const handleApprove = async (id: number) => { try { await api.patch(`/purchases/${id}/approve`); fetchPurchases(); } catch (err: any) { markHandled(err); toast.error("Failed"); } };
+  const handleReject = async (id: number) => { try { await api.patch(`/purchases/${id}/reject`); fetchPurchases(); } catch (err: any) { markHandled(err); toast.error("Failed"); } };
 
   const badge = (s: string) => (<span className={"px-2 py-0.5 text-xs rounded-full font-semibold " + (s==="PENDING"?"bg-yellow-100 text-yellow-800":s==="APPROVED"?"bg-green-100 text-green-800":"bg-red-100 text-red-800")}>{s}</span>);
 

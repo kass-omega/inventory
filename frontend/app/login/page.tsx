@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
+import api, { markHandled } from "@/lib/api";
 import { useState } from "react";
 
 interface DemoAccount {
@@ -37,6 +37,7 @@ export default function LoginPage() {
       localStorage.setItem("access_token", res.data.access_token);
       login(res.data.user);
     } catch (err: any) {
+      markHandled(err);
       if (err?.response?.status === 401) {
         setError("Invalid credentials. Please try again.");
       } else {
