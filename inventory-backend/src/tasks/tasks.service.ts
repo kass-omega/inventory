@@ -14,7 +14,7 @@ export class TasksService {
 
   // Periodically re-scan every location for low stock so alerts are raised
   // even when no inventory change occurs in between (e.g. slow-moving items).
-  @Cron(CronExpression.EVERY_6_HOURS)
+  @Cron(CronExpression.EVERY_HOUR)
   async scanLowStock() {
     const locations = await this.prisma.location.findMany({
       select: { id: true },
