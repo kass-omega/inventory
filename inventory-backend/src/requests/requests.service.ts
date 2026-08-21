@@ -436,22 +436,32 @@ export class RequestsService {
     return this.attachCreatedByNames(requests);
   }
 
-  /** Attach the request creator's display name (createdById has no relation). */
+  /** Attach the request creator's display name and whether they're the owner. */
   private async attachCreatedByNames<T extends { createdById: number }>(
     requests: T[],
-  ): Promise<(T & { createdByName: string | null })[]> {
+  ): Promise<
+    (T & { createdByName: string | null; createdByIsOwner: boolean })[]
+  > {
     const userIds = [...new Set(requests.map((r) => r.createdById))];
     const users = userIds.length
       ? await this.prisma.user.findMany({
           where: { id: { in: userIds } },
-          select: { id: true, name: true },
+          select: {
+            id: true,
+            name: true,
+            role: { select: { isSystem: true } },
+          },
         })
       : [];
-    const nameById = new Map(users.map((u) => [u.id, u.name]));
-    return requests.map((r) => ({
-      ...r,
-      createdByName: nameById.get(r.createdById) ?? null,
-    }));
+    const creatorById = new Map(users.map((u) => [u.id, u]));
+    return requests.map((r) => {
+      const creator = creatorById.get(r.createdById);
+      return {
+        ...r,
+        createdByName: creator?.name ?? null,
+        createdByIsOwner: creator?.role?.isSystem ?? false,
+      };
+    });
   }
 
   async findOne(id: number) {

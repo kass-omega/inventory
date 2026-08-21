@@ -364,17 +364,21 @@ export default function RequestsPage() {
   };
 
   // Direction labels for the From/To columns and the type badge. From = the
-  // origin store (the creator for shop→store / store→owner / store→store), To =
-  // the destination.
+  // origin (an owner-created restock shows the Owner as origin), To = the
+  // destination.
   const fromLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
-      ? r.store?.name
+      ? r.createdByIsOwner
+        ? "Owner"
+        : r.store?.name
       : r.requestType === "STORE_TO_STORE"
         ? r.fromStore?.name ?? r.store?.name
         : r.shop?.name || "—";
   const toLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
-      ? "Owner"
+      ? r.createdByIsOwner
+        ? r.store?.name || "—"
+        : "Owner"
       : r.requestType === "STORE_TO_STORE"
         ? r.fromStore?.name
           ? r.store?.name
@@ -382,7 +386,9 @@ export default function RequestsPage() {
         : r.store?.name || "—";
   const typeLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
-      ? "Store → Owner"
+      ? r.createdByIsOwner
+        ? "Owner → Store"
+        : "Store → Owner"
       : r.requestType === "STORE_TO_STORE"
         ? "Store → Store"
         : "Shop → Store";
