@@ -112,6 +112,7 @@ export class ReportsService {
       where: saleWhere,
       include: {
         items: { include: { product: { include: { category: true } } } },
+        returns: { include: { items: { include: { product: true } } } },
       },
     });
 
@@ -134,46 +135,64 @@ export class ReportsService {
     let creditedCost = 0;
 
     for (const sale of sales) {
+      // Refunds reduce this sale's revenue/profit (fully returned -> 0).
+      const returnedAmount = sale.returns.reduce(
+        (s, r) => s + r.totalRefund,
+        0,
+      );
+      const returnedCost = sale.returns.reduce(
+        (s, r) =>
+          s +
+          r.items.reduce(
+            (si, ri) => si + ri.unitBuyPrice * ri.quantity,
+            0,
+          ),
+        0,
+      );
+
+      let saleRevenue = 0;
+      let saleCost = 0;
+
       if (sale.items.length === 0) {
         // Quick-purchase flip: no line items — use the sale totals directly.
         if (categoryNum || searchTerm) continue;
-        totalRevenue += sale.totalAmount;
-        totalCost += sale.totalCost;
-        if (sale.saleType === 'FULLY_PAID') {
-          fullyPaidRevenue += sale.totalAmount;
-          fullyPaidCost += sale.totalCost;
-        } else if (sale.saleType === 'PARTIALLY_PAID') {
-          partiallyPaidRevenue += sale.totalAmount;
-          partiallyPaidCost += sale.totalCost;
-        } else {
-          creditedRevenue += sale.totalAmount;
-          creditedCost += sale.totalCost;
+        saleRevenue = sale.totalAmount;
+        saleCost = sale.totalCost;
+      } else {
+        for (const item of sale.items) {
+          if (!this.matchesFilters(item, categoryNum, searchTerm)) continue;
+          saleRevenue += item.unitSellPrice * item.quantity;
+          saleCost += item.unitBuyPrice * item.quantity;
+
+          const name = `${item.product.brand} ${item.product.baseName}`;
+          productSales[name] = (productSales[name] || 0) + item.quantity;
         }
-        continue;
       }
 
-      for (const item of sale.items) {
-        if (!this.matchesFilters(item, categoryNum, searchTerm)) continue;
-
-        const itemRevenue = item.unitSellPrice * item.quantity;
-        const itemCost = item.unitBuyPrice * item.quantity;
-
-        totalRevenue += itemRevenue;
-        totalCost += itemCost;
-
-        if (sale.saleType === 'FULLY_PAID') {
-          fullyPaidRevenue += itemRevenue;
-          fullyPaidCost += itemCost;
-        } else if (sale.saleType === 'PARTIALLY_PAID') {
-          partiallyPaidRevenue += itemRevenue;
-          partiallyPaidCost += itemCost;
-        } else {
-          creditedRevenue += itemRevenue;
-          creditedCost += itemCost;
+      // Deduct returned quantities from the top-products tally.
+      for (const r of sale.returns) {
+        for (const ri of r.items) {
+          if (!ri.product) continue;
+          const pname = `${ri.product.brand} ${ri.product.baseName}`;
+          if (productSales[pname]) productSales[pname] -= ri.quantity;
         }
+      }
 
-        const name = `${item.product.brand} ${item.product.baseName}`;
-        productSales[name] = (productSales[name] || 0) + item.quantity;
+      const netRevenue = saleRevenue - returnedAmount;
+      const netCost = saleCost - returnedCost;
+
+      totalRevenue += netRevenue;
+      totalCost += netCost;
+
+      if (sale.saleType === 'FULLY_PAID') {
+        fullyPaidRevenue += netRevenue;
+        fullyPaidCost += netCost;
+      } else if (sale.saleType === 'PARTIALLY_PAID') {
+        partiallyPaidRevenue += netRevenue;
+        partiallyPaidCost += netCost;
+      } else {
+        creditedRevenue += netRevenue;
+        creditedCost += netCost;
       }
     }
 
@@ -203,40 +222,38 @@ export class ReportsService {
       paymentTotals[key].outstanding += sale.remainingAmount || 0;
     }
 
-    // Subtract returns/refunds within the same shop + date window
-    const returnWhere: any = {};
-    if (targetLocationId) returnWhere.shopId = targetLocationId;
-    if (startDate && endDate) {
-      const eod = new Date(endDate);
-      eod.setHours(23, 59, 59, 999);
-      returnWhere.createdAt = { gte: new Date(startDate), lte: eod };
-    }
-    const returns = await this.prisma.return.findMany({
-      where: returnWhere,
-      include: { items: true },
-    });
-    let returnsRefund = 0;
-    let returnsCost = 0;
-    for (const r of returns) {
-      returnsRefund += r.totalRefund;
-      for (const ri of r.items) returnsCost += ri.unitBuyPrice * ri.quantity;
-    }
+    // Total refunds/costs across the reported sales (per-sale netting above
+    // already removed them from revenue/profit; these are reported for context).
+    const returnsRefund = sales.reduce(
+      (s, sale) => s + sale.returns.reduce((s2, r) => s2 + r.totalRefund, 0),
+      0,
+    );
+    const returnsCost = sales.reduce(
+      (s, sale) =>
+        s +
+        sale.returns.reduce(
+          (s2, r) =>
+            s2 +
+            r.items.reduce((s3, ri) => s3 + ri.unitBuyPrice * ri.quantity, 0),
+          0,
+        ),
+      0,
+    );
 
-    const netRevenue = totalRevenue - returnsRefund;
-    const netCost = totalCost - returnsCost;
-    const totalProfit = netRevenue - netCost;
+    const totalProfit = totalRevenue - totalCost;
 
     const topProducts: TopProduct[] = Object.entries(productSales)
       .map(([name, qty]) => ({ name, qty }))
+      .filter((p) => p.qty > 0)
       .sort((a, b) => b.qty - a.qty)
       .slice(0, TOP_PRODUCTS_COUNT);
 
     return {
-      totalRevenue: netRevenue,
-      totalCost: netCost,
+      totalRevenue,
+      totalCost,
       totalProfit,
       returns: { refund: returnsRefund, cost: returnsCost },
-      margin: netRevenue > 0 ? ((totalProfit / netRevenue) * 100).toFixed(2) : '0.00',
+      margin: totalRevenue > 0 ? ((totalProfit / totalRevenue) * 100).toFixed(2) : '0.00',
       topProducts,
       breakdown: {
         fullyPaid: {
@@ -277,7 +294,10 @@ export class ReportsService {
 
     const sales = await this.prisma.sale.findMany({
       where: saleWhere,
-      include: { items: { include: { product: true } } },
+      include: {
+        items: { include: { product: true } },
+        returns: { select: { totalRefund: true } },
+      },
     });
 
     const categoryNum = categoryId && !Number.isNaN(categoryId) && categoryId > 0 ? categoryId : null;
@@ -285,18 +305,23 @@ export class ReportsService {
     const trend: Record<string, { sales: number; flips: number; collections: number }> = {};
 
     for (const sale of sales) {
+      const returnedAmount = sale.returns.reduce(
+        (s, r) => s + r.totalRefund,
+        0,
+      );
       const date = sale.saleDate.toISOString().slice(0, 10);
       trend[date] = trend[date] || { sales: 0, flips: 0, collections: 0 };
       if (sale.items.length === 0) {
         // Quick-purchase flip
-        if (!categoryNum && !searchTerm) trend[date].flips += sale.totalAmount;
+        if (!categoryNum && !searchTerm)
+          trend[date].flips += sale.totalAmount - returnedAmount;
       } else {
         let dailyTotal = 0;
         for (const item of sale.items) {
           if (!this.matchesFilters(item, categoryNum, searchTerm)) continue;
           dailyTotal += item.unitSellPrice * item.quantity;
         }
-        trend[date].sales += dailyTotal;
+        trend[date].sales += Math.max(0, dailyTotal - returnedAmount);
       }
     }
 
@@ -405,7 +430,11 @@ export class ReportsService {
 
     const sales = await this.prisma.sale.findMany({
       where: saleWhere,
-      include: { paymentMethod: true, items: { include: { product: true } } },
+      include: {
+        paymentMethod: true,
+        items: { include: { product: true } },
+        returns: { select: { totalRefund: true } },
+      },
     });
 
     const categoryNum = categoryId && !Number.isNaN(categoryId) && categoryId > 0 ? categoryId : null;
@@ -457,15 +486,24 @@ export class ReportsService {
       }
       if (saleTotal === 0) continue;
 
+      // Deduct refunds from the payment method that received the money.
+      const returnedAmount = sale.returns.reduce(
+        (s, r) => s + r.totalRefund,
+        0,
+      );
+
       const methodName = sale.paymentMethod?.name ?? 'Unspecified';
       if (sale.saleType === 'FULLY_PAID') {
-        add(`${methodName} (Fully Paid)`, sale.paidAmount || sale.totalAmount);
+        add(
+          `${methodName} (Fully Paid)`,
+          Math.max(0, (sale.paidAmount || sale.totalAmount) - returnedAmount),
+        );
       } else if (sale.saleType === 'PARTIALLY_PAID') {
         // The initial partial amount excludes anything already settled through
         // linked credit payments (those are reported separately below).
         const settled = linkedBySale.get(sale.id) || 0;
         const initialPaid = Math.max(0, (sale.paidAmount || 0) - settled);
-        add(`${methodName} (Partial)`, initialPaid);
+        add(`${methodName} (Partial)`, Math.max(0, initialPaid - returnedAmount));
       }
       // CREDITED sales contribute nothing at sale time — only their credit
       // payments (below) count as money received.
@@ -903,7 +941,8 @@ export class ReportsService {
       this.prisma.sale.aggregate({ where: { ...baseWhere, saleType: 'CREDITED' }, _sum: { totalAmount: true, profit: true, paidAmount: true, remainingAmount: true } }),
     ]);
 
-    // Returns within the same window
+    // Returns within the same window (attributed to the sale type so the
+    // breakdown reflects net revenue/profit).
     const returnWhere: any = {};
     if (shopId) returnWhere.shopId = shopId;
     else if (user.locationType === 'SHOP') returnWhere.shopId = user.locationId;
@@ -911,13 +950,31 @@ export class ReportsService {
 
     const returns = await this.prisma.return.findMany({
       where: returnWhere,
-      include: { items: true },
+      include: {
+        items: true,
+        sale: { select: { saleType: true } },
+      },
     });
+    const typeReturns = {
+      fullyPaid: { refund: 0, cost: 0 },
+      partiallyPaid: { refund: 0, cost: 0 },
+      credited: { refund: 0, cost: 0 },
+    };
     let returnsRefund = 0;
     let returnsCost = 0;
     for (const r of returns) {
       returnsRefund += r.totalRefund;
-      for (const ri of r.items) returnsCost += ri.unitBuyPrice * ri.quantity;
+      let cost = 0;
+      for (const ri of r.items) cost += ri.unitBuyPrice * ri.quantity;
+      returnsCost += cost;
+      const key =
+        r.sale?.saleType === 'PARTIALLY_PAID'
+          ? 'partiallyPaid'
+          : r.sale?.saleType === 'CREDITED'
+            ? 'credited'
+            : 'fullyPaid';
+      typeReturns[key].refund += r.totalRefund;
+      typeReturns[key].cost += cost;
     }
 
     const grossRevenue = (regularSales._sum.totalAmount || 0) + (flips._sum.totalAmount || 0);
@@ -932,8 +989,9 @@ export class ReportsService {
       where: { status: 'PENDING', ...(shopId ? { shopId } : {}) },
     });
 
-    const salesRevenue = regularSales._sum.totalAmount || 0;
-    const salesProfit = regularSales._sum.profit || 0;
+    const salesRevenue = (regularSales._sum.totalAmount || 0) - returnsRefund;
+    const salesProfit = (regularSales._sum.profit || 0) - returnsCost;
+    const salesCost = (regularSales._sum.totalCost || 0) - returnsCost;
     const flipsRevenue = flips._sum.totalAmount || 0;
     const flipsProfit = flips._sum.profit || 0;
     const salesMargin = salesRevenue > 0 ? (salesProfit / salesRevenue) * 100 : 0;
@@ -942,26 +1000,26 @@ export class ReportsService {
     return {
       sales: {
         revenue: salesRevenue,
-        cost: regularSales._sum.totalCost || 0,
+        cost: salesCost,
         profit: salesProfit,
         count: regularSales._count,
         margin: +salesMargin.toFixed(1),
         breakdown: {
           fullyPaid: {
-            revenue: fullyPaid._sum.totalAmount || 0,
-            profit: fullyPaid._sum.profit || 0,
+            revenue: (fullyPaid._sum.totalAmount || 0) - typeReturns.fullyPaid.refund,
+            profit: (fullyPaid._sum.profit || 0) - typeReturns.fullyPaid.cost,
             collected: fullyPaid._sum.paidAmount || 0,
             outstanding: fullyPaid._sum.remainingAmount || 0,
           },
           partiallyPaid: {
-            revenue: partiallyPaid._sum.totalAmount || 0,
-            profit: partiallyPaid._sum.profit || 0,
+            revenue: (partiallyPaid._sum.totalAmount || 0) - typeReturns.partiallyPaid.refund,
+            profit: (partiallyPaid._sum.profit || 0) - typeReturns.partiallyPaid.cost,
             collected: partiallyPaid._sum.paidAmount || 0,
             outstanding: partiallyPaid._sum.remainingAmount || 0,
           },
           credited: {
-            revenue: credited._sum.totalAmount || 0,
-            profit: credited._sum.profit || 0,
+            revenue: (credited._sum.totalAmount || 0) - typeReturns.credited.refund,
+            profit: (credited._sum.profit || 0) - typeReturns.credited.cost,
             collected: credited._sum.paidAmount || 0,
             outstanding: credited._sum.remainingAmount || 0,
           },
@@ -1385,6 +1443,7 @@ export class ReportsService {
       include: {
         items: { include: { product: { include: { category: true } } } },
         shop: true,
+        returns: { select: { totalRefund: true } },
       },
       orderBy: { saleDate: 'desc' },
       take: 500,
@@ -1397,18 +1456,22 @@ export class ReportsService {
           this.matchesFilters(item, categoryNum, searchTerm),
         );
       })
-      .map((s) => [
-        s.invoiceNumber,
-        s.saleDate.toISOString().slice(0, 10),
-        s.shop?.name ?? '',
-        s.items.map((i) => `${i.quantity}x ${i.product.baseName}`).join(', '),
-        s.totalAmount,
-        s.saleType,
-      ]);
+      .map((s) => {
+        const returned = s.returns.reduce((sum, r) => sum + r.totalRefund, 0);
+        return [
+          s.invoiceNumber,
+          s.saleDate.toISOString().slice(0, 10),
+          s.shop?.name ?? '',
+          s.items.map((i) => `${i.quantity}x ${i.product.baseName}`).join(', '),
+          s.totalAmount,
+          Math.max(0, s.totalAmount - returned),
+          s.saleType,
+        ];
+      });
 
     return {
       title: 'Sales List',
-      headers: ['Invoice', 'Date', 'Shop', 'Items', 'Total', 'Type'],
+      headers: ['Invoice', 'Date', 'Shop', 'Items', 'Total', 'Net', 'Type'],
       rows,
     };
   }

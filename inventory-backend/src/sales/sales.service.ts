@@ -173,6 +173,9 @@ export class SalesService {
         customer: true,
         purchase: true,
         soldBy: true,
+        returns: {
+          include: { items: { select: { unitBuyPrice: true, quantity: true } } },
+        },
       },
       orderBy: { saleDate: 'desc' },
     });
@@ -198,6 +201,9 @@ export class SalesService {
         customer: true,
         purchase: true,
         soldBy: true,
+        returns: {
+          include: { items: { select: { unitBuyPrice: true, quantity: true } } },
+        },
       },
     });
 
@@ -327,9 +333,185 @@ export class SalesService {
     });
   }
 
-  async remove(id: number) {
-    // In a real app, you'd reverse the inventory deductions here
-    return this.prisma.sale.delete({ where: { id } });
+  async removeSale(id: number, user: JwtPayload) {
+    const sale = await this.prisma.sale.findUnique({
+      where: { id },
+      include: {
+        items: true,
+        returns: { include: { items: true } },
+        creditSale: true,
+      },
+    });
+    if (!sale) throw new NotFoundException('Sale not found');
+
+    if (user.locationId !== null && user.locationId !== sale.shopId) {
+      throw new ForbiddenException('You can only delete sales from your own shop');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Restock: sold quantity minus already-returned quantity per product
+      const returnedByProduct = new Map<number, number>();
+      for (const r of sale.returns) {
+        for (const ri of r.items) {
+          returnedByProduct.set(
+            ri.productId,
+            (returnedByProduct.get(ri.productId) ?? 0) + ri.quantity,
+          );
+        }
+      }
+      for (const item of sale.items) {
+        const toRestock = item.quantity - (returnedByProduct.get(item.productId) ?? 0);
+        if (toRestock <= 0) continue;
+        await tx.inventory.upsert({
+          where: {
+            productId_locationId: { productId: item.productId, locationId: sale.shopId },
+          },
+          create: {
+            productId: item.productId,
+            locationId: sale.shopId,
+            quantity: toRestock,
+          },
+          update: { quantity: { increment: toRestock } },
+        });
+      }
+
+      // 2. Delete the sale's returns + their cash OUTFLOW refund entries
+      const returnIds = sale.returns.map((r) => r.id);
+      if (returnIds.length > 0) {
+        await tx.cashEntry.deleteMany({
+          where: { source: 'RETURN', refId: { in: returnIds } },
+        });
+        await tx.return.deleteMany({ where: { saleId: id } });
+      }
+
+      // 3. Delete the credit sale entirely
+      await tx.creditSale.deleteMany({ where: { saleId: id } });
+
+      // 4. Wipe linked credit payments so payment-channel reports stay accurate
+      await tx.creditPayment.deleteMany({ where: { saleId: id } });
+
+      // 5. Delete the sale (sale items cascade; purchase link nulls)
+      await tx.sale.delete({ where: { id } });
+
+      await tx.auditLog.create({
+        data: {
+          userId: user.sub,
+          action: 'SALE_DELETED',
+          details: `Deleted sale #${sale.invoiceNumber}: $${sale.totalAmount.toFixed(2)} (${sale.saleType}) — restocked items`,
+        },
+      });
+    });
+
+    return { message: 'Sale deleted' };
+  }
+
+  async removeReturn(id: number, user: JwtPayload, restore: boolean) {
+    const ret = await this.prisma.return.findUnique({
+      where: { id },
+      include: {
+        items: true,
+        sale: { include: { creditSale: true, items: true } },
+      },
+    });
+    if (!ret) throw new NotFoundException('Return not found');
+
+    if (user.locationId !== null && user.locationId !== ret.shopId) {
+      throw new ForbiddenException('You can only delete returns from your own shop');
+    }
+
+    const sale = ret.sale;
+    const returnedCost = ret.items.reduce(
+      (sum, ri) => sum + ri.unitBuyPrice * ri.quantity,
+      0,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      // Reverse the restock in BOTH modes: the item leaves stock again
+      // (re-sold for "full undo", written off for "damaged").
+      for (const ri of ret.items) {
+        const inv = await tx.inventory.findUnique({
+          where: {
+            productId_locationId: { productId: ri.productId, locationId: ret.shopId },
+          },
+        });
+        if (inv) {
+          await tx.inventory.update({
+            where: { id: inv.id },
+            data: { quantity: { decrement: ri.quantity } },
+          });
+        }
+      }
+
+      if (restore) {
+        // Full undo: the refund never happened — remove the cash OUTFLOW entry
+        await tx.cashEntry.deleteMany({
+          where: { source: 'RETURN', refId: id },
+        });
+
+        // Restore the credit balance the return had reduced
+        if (sale && sale.saleType !== 'FULLY_PAID') {
+          const newRemaining = sale.remainingAmount + ret.totalRefund;
+          await tx.sale.update({
+            where: { id: sale.id },
+            data: { remainingAmount: newRemaining },
+          });
+          if (sale.creditSale) {
+            await tx.creditSale.update({
+              where: { id: sale.creditSale.id },
+              data: { totalAmount: sale.creditSale.totalAmount + ret.totalRefund },
+            });
+          } else if (sale.customerId && newRemaining > 0) {
+            // Credit sale had been fully paid off by the return — recreate it
+            await tx.creditSale.create({
+              data: {
+                customerId: sale.customerId,
+                saleId: sale.id,
+                shopId: sale.shopId,
+                totalAmount: newRemaining,
+                items: {
+                  create: sale.items.map((si) => ({
+                    productId: si.productId,
+                    quantity: si.quantity,
+                    unitPrice: si.unitSellPrice,
+                  })),
+                },
+              },
+            });
+          }
+        }
+      } else if (sale) {
+        // Written off: the refund stands, so bake it into the sale so reports
+        // stay reduced even after the return record is gone.
+        const newTotal = Math.max(0, sale.totalAmount - ret.totalRefund);
+        const newCost = Math.max(0, sale.totalCost - returnedCost);
+        const newPaid =
+          sale.saleType === 'FULLY_PAID'
+            ? Math.max(0, sale.paidAmount - ret.totalRefund)
+            : sale.paidAmount;
+        await tx.sale.update({
+          where: { id: sale.id },
+          data: {
+            totalAmount: newTotal,
+            totalCost: newCost,
+            profit: newTotal - newCost,
+            paidAmount: newPaid,
+          },
+        });
+        // Cash OUTFLOW entry + remainingAmount/creditSale stay as-is
+      }
+
+      await tx.return.delete({ where: { id } });
+
+      await tx.auditLog.create({
+        data: {
+          userId: user.sub,
+          action: 'RETURN_DELETED',
+          details: `Deleted return #${id}: $${ret.totalRefund.toFixed(2)} refund (${restore ? 'full undo' : 'written off'})`,
+        },
+      });
+    });
+
+    return { message: 'Return deleted' };
   }
 
   async returnSale(saleId: number, dto: ReturnSaleDto, user: JwtPayload) {

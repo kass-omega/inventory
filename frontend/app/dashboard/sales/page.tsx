@@ -6,6 +6,7 @@ import { getDateRange } from "@/app/components/DateFilter";
 import FilterPanel from "@/app/components/FilterPanel";
 import Modal from "@/app/components/Modal";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
+import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/app/components/ToastProvider";
 import api, { markHandled } from "@/lib/api";
@@ -36,6 +37,7 @@ type DatePreset = "today" | "week" | "month" | "year";
 export default function SalesPage() {
   const { user, hasPermission } = useAuth();
   const toast = useToast();
+  const confirm = useConfirm();
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
@@ -78,13 +80,82 @@ export default function SalesPage() {
   const [returns, setReturns] = useState<any[]>([]);
   const [tab, setTab] = useState<"sales" | "payments">("sales");
   const [viewingSale, setViewingSale] = useState<any>(null);
+  const [deletingReturn, setDeletingReturn] = useState<any>(null);
+
+  // Filters (payment method + sale type)
+  const [paymentFilter, setPaymentFilter] = useState("");
+  const [saleTypeFilter, setSaleTypeFilter] = useState("");
+
+  // Settle-payment modal (partial / credited sales)
+  const [paySale, setPaySale] = useState<any>(null);
+  const [settleAmount, setSettleAmount] = useState("");
+  const [settleMethodId, setSettleMethodId] = useState("");
+  const [settleNotes, setSettleNotes] = useState("");
 
   const isOwner = user?.isSuperuser === true;
   const canViewProfit = hasPermission("sales.view-profit");
 
+  // Delete actions are available to the owner or the shop's own user.
+  const canDeleteSale = (s: any) =>
+    hasPermission("sales.delete") &&
+    (isOwner || (user?.locationType === "SHOP" && user?.locationId === s.shopId));
+  const canDeleteReturn = (r: any) =>
+    hasPermission("sales.return") &&
+    (isOwner || (user?.locationType === "SHOP" && user?.locationId === r.shopId));
+
   const fetchSales = async () => {
     const res = await api.get("/sales");
     setSales(res.data);
+  };
+
+  // Returns helpers: refunded amount and refunded cost for a sale.
+  const returnedFor = (s: any) =>
+    (s.returns || []).reduce(
+      (sum: number, r: any) => sum + (r.totalRefund || 0),
+      0,
+    );
+  const returnedCostFor = (s: any) =>
+    (s.returns || []).reduce(
+      (sum: number, r: any) =>
+        sum +
+        (r.items || []).reduce(
+          (s2: number, ri: any) => s2 + (ri.unitBuyPrice || 0) * (ri.quantity || 0),
+          0,
+        ),
+      0,
+    );
+
+  // Record a payment against a partial/credited sale from the sales page.
+  const handleSettlePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paySale) return;
+    const amount = Number(settleAmount);
+    if (!amount || amount <= 0) {
+      setErrorMsg("Enter an amount greater than 0.");
+      return;
+    }
+    if (!paySale.customerId) {
+      setErrorMsg("This sale has no customer to attribute the payment to.");
+      return;
+    }
+    try {
+      await api.post("/credit-payments", {
+        customerId: paySale.customerId,
+        amount,
+        notes: settleNotes || undefined,
+        paymentMethodId: settleMethodId ? Number(settleMethodId) : undefined,
+        saleId: paySale.id,
+      });
+      toast.success("Payment recorded.");
+      setPaySale(null);
+      setSettleAmount("");
+      setSettleMethodId("");
+      setSettleNotes("");
+      fetchSales();
+    } catch (err: any) {
+      markHandled(err);
+      toast.error(err.response?.data?.message || "Failed to record payment.");
+    }
   };
 
   const fetchProducts = async () => {
@@ -160,9 +231,14 @@ export default function SalesPage() {
           .toLowerCase();
         if (!haystack.includes(q)) return false;
       }
+      if (saleTypeFilter && s.saleType !== saleTypeFilter) return false;
+      if (paymentFilter) {
+        if (s.saleType === "CREDITED") return false; // no payment method at sale time
+        if (String(s.paymentMethodId || "") !== paymentFilter) return false;
+      }
       return true;
     });
-  }, [sales, locationFilter, startDate, endDate, categoryFilter, search]);
+  }, [sales, locationFilter, startDate, endDate, categoryFilter, search, saleTypeFilter, paymentFilter]);
 
   // Payment method totals from the filtered sales (shared filters)
   const paymentBreakdown = useMemo(() => {
@@ -172,7 +248,7 @@ export default function SalesPage() {
         s.saleType === "CREDITED"
           ? "Credit"
           : s.paymentMethod?.name || "Unspecified";
-      map.set(name, (map.get(name) || 0) + s.totalAmount);
+      map.set(name, (map.get(name) || 0) + Math.max(0, s.totalAmount - returnedFor(s)));
     }
     return Array.from(map.entries())
       .map(([method, total]) => ({ method, total }))
@@ -348,6 +424,41 @@ export default function SalesPage() {
     }
   };
 
+  const handleDeleteSale = async (s: any) => {
+    const ok = await confirm(
+      `Delete sale #${s.invoiceNumber}? Its items will be restocked and its revenue removed from reports. This cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await api.delete(`/sales/${s.id}`);
+      toast.success("Sale deleted.");
+      fetchSales();
+      api.get("/sales/returns").then((r) => setReturns(r.data));
+    } catch (err: any) {
+      markHandled(err);
+      toast.error(err.response?.data?.message || "Failed to delete sale.");
+    }
+  };
+
+  const handleDeleteReturn = async (r: any, restore: boolean) => {
+    try {
+      await api.delete(`/sales/returns/${r.id}`, {
+        params: restore ? { restore: true } : undefined,
+      });
+      toast.success(
+        restore
+          ? "Return deleted — sale restored."
+          : "Return deleted — refund kept, items written off.",
+      );
+      setDeletingReturn(null);
+      setReturns((prev) => prev.filter((x: any) => x.id !== r.id));
+      fetchSales();
+    } catch (err: any) {
+      markHandled(err);
+      toast.error(err.response?.data?.message || "Failed to delete return.");
+    }
+  };
+
   useEffect(() => {
     api
       .get("/sales/returns")
@@ -456,6 +567,31 @@ export default function SalesPage() {
         locations={locations}
         showLocation={isOwner}
       />
+
+      <div className="flex flex-wrap gap-2 mb-4 items-center">
+        <select
+          value={saleTypeFilter}
+          onChange={(e) => setSaleTypeFilter(e.target.value)}
+          className="border p-2 rounded-lg bg-white text-sm"
+        >
+          <option value="">All Sale Types</option>
+          <option value="FULLY_PAID">Fully Paid</option>
+          <option value="PARTIALLY_PAID">Partial</option>
+          <option value="CREDITED">Credit</option>
+        </select>
+        <select
+          value={paymentFilter}
+          onChange={(e) => setPaymentFilter(e.target.value)}
+          className="border p-2 rounded-lg bg-white text-sm"
+        >
+          <option value="">All Payment Methods</option>
+          {paymentMethods.map((m: any) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {tab === "sales" && (
         <div className="flex justify-between items-center mb-6 w-full max-w-full">
@@ -942,7 +1078,12 @@ export default function SalesPage() {
                   )}
                 </td>
                 <td className="p-2 sm:p-3 md:p-4 font-semibold text-xs sm:text-sm">
-                  ${s.totalAmount.toFixed(2)}
+                  ${Math.max(0, s.totalAmount - returnedFor(s)).toFixed(2)}
+                  {returnedFor(s) > 0 && (
+                    <div className="text-[10px] text-red-400 font-normal">
+                      returned {returnedFor(s).toFixed(2)}
+                    </div>
+                  )}
                 </td>
                 <td className="p-2 sm:p-3 md:p-4">
                   <span
@@ -965,10 +1106,17 @@ export default function SalesPage() {
                       {s.paymentMethod.name}
                     </div>
                   )}
+                  {(s.saleType === "PARTIALLY_PAID" ||
+                    s.saleType === "CREDITED") && (
+                    <div className="text-[10px] text-gray-400 mt-0.5">
+                      Paid {s.paidAmount.toFixed(2)} / Remaining{" "}
+                      {s.remainingAmount.toFixed(2)}
+                    </div>
+                  )}
                 </td>
                 {canViewProfit && (
                   <td className="p-2 sm:p-3 md:p-4 text-green-600 font-semibold text-xs sm:text-sm">
-                    ${s.profit.toFixed(2)}
+                    ${(s.profit - returnedCostFor(s)).toFixed(2)}
                   </td>
                 )}
                 <td className="p-2 sm:p-3 md:p-4" onClick={(e) => e.stopPropagation()}>
@@ -981,6 +1129,31 @@ export default function SalesPage() {
                         color: "text-red-600",
                         onClick: () => startReturn(s),
                       },
+                      ...((s.saleType === "PARTIALLY_PAID" ||
+                        s.saleType === "CREDITED") &&
+                      s.customerId
+                        ? [
+                            {
+                              label: "Record Payment",
+                              color: "text-blue-600",
+                              onClick: () => {
+                                setPaySale(s);
+                                setSettleAmount("");
+                                setSettleMethodId("");
+                                setSettleNotes("");
+                              },
+                            },
+                          ]
+                        : []),
+                      ...(canDeleteSale(s)
+                        ? [
+                            {
+                              label: "Delete",
+                              color: "text-red-600",
+                              onClick: () => handleDeleteSale(s),
+                            },
+                          ]
+                        : []),
                     ]}
                   />
                 </td>
@@ -1019,6 +1192,7 @@ export default function SalesPage() {
                   <th className="p-2 sm:p-3">Refund</th>
                   <th className="p-2 sm:p-3">Reason</th>
                   <th className="p-2 sm:p-3">Date</th>
+                  <th className="p-2 sm:p-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1047,6 +1221,17 @@ export default function SalesPage() {
                     </td>
                     <td className="p-2 sm:p-3 text-gray-500">
                       {r.createdAt?.slice(0, 10)}
+                    </td>
+                    <td className="p-2 sm:p-3" onClick={(e) => e.stopPropagation()}>
+                      {canDeleteReturn(r) && (
+                        <button
+                          type="button"
+                          onClick={() => setDeletingReturn(r)}
+                          className="text-red-600 hover:text-red-800 text-xs font-medium"
+                        >
+                          Delete
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1143,6 +1328,64 @@ export default function SalesPage() {
         </form>
       </Modal>
 
+      {/* Record Payment (settle partial/credited sale) Modal */}
+      <Modal
+        isOpen={!!paySale}
+        onClose={() => setPaySale(null)}
+        title={`Record Payment — Sale #${paySale?.invoiceNumber || ""}`}
+      >
+        <form onSubmit={handleSettlePayment} className="grid grid-cols-1 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-1">
+              Amount (birr)
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              min="1"
+              value={settleAmount}
+              onChange={(e) => setSettleAmount(e.target.value)}
+              className="border p-2 rounded-lg w-full text-sm"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-1">
+              Payment Method
+            </label>
+            <select
+              value={settleMethodId}
+              onChange={(e) => setSettleMethodId(e.target.value)}
+              className="border p-2 rounded-lg w-full bg-white text-sm"
+            >
+              <option value="">Cash</option>
+              {paymentMethods.map((m: any) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-1">
+              Notes
+            </label>
+            <input
+              value={settleNotes}
+              onChange={(e) => setSettleNotes(e.target.value)}
+              placeholder="e.g. Paid via CBE"
+              className="border p-2 rounded-lg w-full text-sm"
+            />
+          </div>
+          <button
+            type="submit"
+            className="bg-green-600 text-white p-2 rounded-lg text-sm font-medium mt-2 hover:bg-green-700"
+          >
+            Record Payment
+          </button>
+        </form>
+      </Modal>
+
       {/* Sale Details Modal */}
       <Modal
         isOpen={!!viewingSale}
@@ -1227,7 +1470,15 @@ export default function SalesPage() {
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div>
                 <span className="text-gray-400">Total:</span>{" "}
-                <strong>{viewingSale.totalAmount.toFixed(2)} birr</strong>
+                <strong>
+                  {Math.max(0, viewingSale.totalAmount - returnedFor(viewingSale)).toFixed(2)}{" "}
+                  birr
+                </strong>
+                {returnedFor(viewingSale) > 0 && (
+                  <div className="text-[10px] text-red-400 font-normal">
+                    ({returnedFor(viewingSale).toFixed(2)} returned)
+                  </div>
+                )}
               </div>
               <div>
                 <span className="text-gray-400">Paid / Remaining:</span>{" "}
@@ -1247,7 +1498,7 @@ export default function SalesPage() {
                         viewingSale.profit >= 0 ? "text-green-600" : "text-red-500"
                       }
                     >
-                      {viewingSale.profit.toFixed(2)} birr
+                      {(viewingSale.profit - returnedCostFor(viewingSale)).toFixed(2)} birr
                     </strong>
                   </div>
                 </>
@@ -1258,8 +1509,65 @@ export default function SalesPage() {
                 <span className="text-gray-400">Notes:</span> {viewingSale.notes}
               </div>
             )}
+            {(viewingSale.saleType === "PARTIALLY_PAID" ||
+              viewingSale.saleType === "CREDITED") &&
+              viewingSale.customerId && (
+                <button
+                  onClick={() => {
+                    setPaySale(viewingSale);
+                    setSettleAmount("");
+                    setSettleMethodId("");
+                    setSettleNotes("");
+                  }}
+                  className="bg-blue-600 text-white px-3 py-2 rounded-lg text-xs sm:text-sm font-medium w-full"
+                >
+                  Record Payment
+                </button>
+              )}
           </div>
         )}
+      </Modal>
+
+      {/* Delete return — two modes */}
+      <Modal
+        isOpen={deletingReturn !== null}
+        onClose={() => setDeletingReturn(null)}
+        title={`Delete Return — Sale #${deletingReturn?.sale?.invoiceNumber || ""}`}
+      >
+        <div className="grid grid-cols-1 gap-3">
+          <p className="text-sm text-gray-600">
+            This return refunded{" "}
+            <strong>${deletingReturn?.totalRefund.toFixed(2)}</strong>. How should
+            the deletion be handled?
+          </p>
+          <button
+            type="button"
+            onClick={() => handleDeleteReturn(deletingReturn, true)}
+            className="bg-green-600 text-white p-2.5 rounded-lg font-medium text-sm text-left"
+          >
+            Full Undo — restore the sale
+            <span className="block text-[11px] font-normal opacity-90">
+              Restores revenue, removes the refund outflow, returns credit to the sale
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDeleteReturn(deletingReturn, false)}
+            className="bg-red-600 text-white p-2.5 rounded-lg font-medium text-sm text-left"
+          >
+            Damaged / Written-off — keep the refund
+            <span className="block text-[11px] font-normal opacity-90">
+              Revenue stays reduced and the refund outflow stays; items are written off
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setDeletingReturn(null)}
+            className="border border-gray-300 text-gray-700 p-2 rounded-lg font-medium text-sm"
+          >
+            Cancel
+          </button>
+        </div>
       </Modal>
     </div>
   );

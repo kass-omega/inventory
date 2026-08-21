@@ -418,7 +418,7 @@ export class RequestsService {
       };
     }
 
-    return this.prisma.stockRequest.findMany({
+    const requests = await this.prisma.stockRequest.findMany({
       where,
       include: {
         items: { include: { product: true } },
@@ -427,6 +427,25 @@ export class RequestsService {
         fromStore: true,
       },
     });
+    return this.attachCreatedByNames(requests);
+  }
+
+  /** Attach the request creator's display name (createdById has no relation). */
+  private async attachCreatedByNames<T extends { createdById: number }>(
+    requests: T[],
+  ): Promise<(T & { createdByName: string | null })[]> {
+    const userIds = [...new Set(requests.map((r) => r.createdById))];
+    const users = userIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const nameById = new Map(users.map((u) => [u.id, u.name]));
+    return requests.map((r) => ({
+      ...r,
+      createdByName: nameById.get(r.createdById) ?? null,
+    }));
   }
 
   async findOne(id: number) {
@@ -440,7 +459,7 @@ export class RequestsService {
       },
     });
     if (!req) throw new NotFoundException('Request not found');
-    return req;
+    return (await this.attachCreatedByNames([req]))[0];
   }
 
   // --- Helper: re-evaluate overall request status ---
@@ -492,7 +511,7 @@ export class RequestsService {
     );
 
     if (allDispatchedOrBeyond && someDispatchedOrStored)
-      return RequestStatus.COMPLETED;
+      return RequestStatus.AWAITING_CONFIRMATION;
     if (allApprovedOrBeyond && someApproved && !someDispatchedOrStored)
       return RequestStatus.APPROVED;
     if (someApproved && !allApprovedOrBeyond)

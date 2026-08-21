@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Post,
   Put,
+  Query,
   Req,
 } from '@nestjs/common';
 import { Permissions } from '../common/decorators/permissions/permissions.decorator';
@@ -63,9 +64,22 @@ export class SalesController {
     return this.service.updateSale(id, dto, req.user);
   }
 
+  @Delete('returns/:id')
+  @Permissions('sales.return')
+  removeReturn(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('restore') restore: string,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.service.removeReturn(id, req.user, restore === 'true');
+  }
+
   @Delete(':id')
   @Permissions('sales.delete')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.service.remove(id);
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.service.removeSale(id, req.user);
   }
 }

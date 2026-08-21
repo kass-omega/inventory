@@ -353,23 +353,87 @@ export default function RequestsPage() {
     }
   };
 
-  // Direction labels for the From/To columns and the type badge.
+  // Direction labels for the From/To columns and the type badge. From = the
+  // origin store (the creator for shop→store / store→owner / store→store), To =
+  // the destination.
   const fromLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
       ? r.store?.name
       : r.requestType === "STORE_TO_STORE"
-        ? r.fromStore?.name
+        ? r.fromStore?.name ?? r.store?.name
         : r.shop?.name || "—";
   const toLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
       ? "Owner"
-      : r.store?.name || "—";
+      : r.requestType === "STORE_TO_STORE"
+        ? r.fromStore?.name
+          ? r.store?.name
+          : "—"
+        : r.store?.name || "—";
   const typeLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
       ? "Store → Owner"
       : r.requestType === "STORE_TO_STORE"
         ? "Store → Store"
         : "Shop → Store";
+
+  // Who performs the next action — shown as a caption under the request status.
+  const nextActorForRequest = (r: any) => {
+    switch (r.status) {
+      case "PENDING":
+      case "PARTIALLY_APPROVED":
+        return "Next: owner to approve";
+      case "APPROVED":
+        return r.requestType === "STORE_TO_STORE"
+          ? "Next: source store to dispatch"
+          : "Next: store to dispatch";
+      case "PARTIALLY_DISPATCHED":
+        return r.requestType === "STORE_TO_STORE"
+          ? "Next: source store to finish dispatch"
+          : "Next: store to dispatch remaining";
+      case "AWAITING_CONFIRMATION":
+      case "COMPLETED":
+        return r.requestType === "STORE_TO_OWNER"
+          ? "Next: store to confirm receipt"
+          : r.requestType === "STORE_TO_STORE"
+            ? "Next: receiving store to confirm receipt"
+            : "Next: shop to confirm receipt";
+      case "REJECTED":
+        return "Rejected — edit or delete";
+      case "CLOSED":
+        return "Closed";
+      default:
+        return "";
+    }
+  };
+
+  // Who performs the next action for a single request item (manage modal).
+  const nextActorForItem = (r: any, item: any) => {
+    switch (item.status) {
+      case "PENDING":
+        return r.requestType === "STORE_TO_OWNER"
+          ? "Next: owner to store/reject"
+          : "Next: owner to approve";
+      case "APPROVED":
+        return r.requestType === "STORE_TO_STORE"
+          ? "Next: source store to dispatch"
+          : "Next: store to dispatch";
+      case "STORED":
+        return "Next: store to confirm receipt";
+      case "DISPATCHED":
+        return r.requestType === "STORE_TO_STORE"
+          ? "Next: receiving store to confirm"
+          : "Next: shop to confirm receipt";
+      case "REJECTED":
+        return "Rejected";
+      case "RECEIVED":
+        return "Received";
+      case "PARTIALLY_RECEIVED":
+        return "Shortage — review";
+      default:
+        return "";
+    }
+  };
 
   const statuses = [
     "PENDING",
@@ -378,6 +442,7 @@ export default function RequestsPage() {
     "REJECTED",
     "PARTIALLY_DISPATCHED",
     "COMPLETED",
+    "AWAITING_CONFIRMATION",
     "CLOSED",
   ];
 
@@ -518,6 +583,11 @@ export default function RequestsPage() {
                 </td>
                 <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm font-medium">
                   {fromLabel(r)}
+                  {r.createdByName && (
+                    <div className="text-[10px] text-gray-400 font-normal">
+                      {r.createdByName}
+                    </div>
+                  )}
                 </td>
                 <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm text-gray-600">
                   {toLabel(r)}
@@ -541,18 +611,25 @@ export default function RequestsPage() {
                     className={`px-1.5 sm:px-2 py-0.5 sm:py-1 text-[10px] sm:text-xs rounded-full font-semibold ${
                       r.status === "PENDING"
                         ? "bg-yellow-100 text-yellow-800"
-                        : r.status === "APPROVED" ||
-                            r.status === "PARTIALLY_APPROVED"
-                          ? "bg-blue-100 text-blue-800"
-                          : r.status === "REJECTED"
-                            ? "bg-red-100 text-red-800"
-                            : r.status === "CLOSED"
-                              ? "bg-gray-100 text-gray-600"
-                              : "bg-green-100 text-green-800"
+                        : r.status === "AWAITING_CONFIRMATION"
+                          ? "bg-orange-100 text-orange-800"
+                          : r.status === "APPROVED" ||
+                              r.status === "PARTIALLY_APPROVED"
+                            ? "bg-blue-100 text-blue-800"
+                            : r.status === "REJECTED"
+                              ? "bg-red-100 text-red-800"
+                              : r.status === "CLOSED"
+                                ? "bg-gray-100 text-gray-600"
+                                : "bg-green-100 text-green-800"
                     }`}
                   >
-                    {r.status.replace(/_/g, " ")}
+                    {r.status === "AWAITING_CONFIRMATION"
+                      ? "Confirmation Pending"
+                      : r.status.replace(/_/g, " ")}
                   </span>
+                  <div className="mt-0.5 text-[10px] text-gray-400">
+                    {nextActorForRequest(r)}
+                  </div>
                 </td>
                 <td className="p-2 sm:p-3 md:p-4">
                   <RowActionsMenu
@@ -666,6 +743,9 @@ export default function RequestsPage() {
                         })`}
                     </p>
                   )}
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    {nextActorForItem(selectedReq, item)}
+                  </p>
                 </div>
 
                 {/* Owner - Shop→Store: Approve/Reject */}
