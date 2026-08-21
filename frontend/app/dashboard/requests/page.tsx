@@ -1,10 +1,10 @@
 "use client";
 import BarcodeScanner from "@/app/components/BarcodeScanner";
+import { useConfirm } from "@/app/components/ConfirmProvider";
 import FilterRow, { FilterField } from "@/app/components/FilterRow";
 import Modal from "@/app/components/Modal";
 import RowActionsMenu from "@/app/components/RowActionsMenu";
 import SearchableSelect from "@/app/components/SearchableSelect";
-import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
 import api, { markHandled } from "@/lib/api";
@@ -132,9 +132,7 @@ export default function RequestsPage() {
       fetchRequests();
     } catch (err: any) {
       markHandled(err);
-      toast.error(
-        err.response?.data?.message || "Failed to create request.",
-      );
+      toast.error(err.response?.data?.message || "Failed to create request.");
     }
   };
 
@@ -147,7 +145,9 @@ export default function RequestsPage() {
       return;
     }
     if (reqItems.some((i) => i.productId === String(product.id))) {
-      toast.error(`${product.brand} ${product.baseName} is already in the request`);
+      toast.error(
+        `${product.brand} ${product.baseName} is already in the request`,
+      );
       return;
     }
     setReqItems((prev) =>
@@ -156,9 +156,7 @@ export default function RequestsPage() {
           ? {
               ...item,
               productId: String(product.id),
-              categoryId: product.categoryId
-                ? String(product.categoryId)
-                : "",
+              categoryId: product.categoryId ? String(product.categoryId) : "",
             }
           : item,
       ),
@@ -344,7 +342,9 @@ export default function RequestsPage() {
       fetchRequests();
     } catch (err: any) {
       markHandled(err);
-      toast.error(err.response?.data?.message || "Failed to send request back.");
+      toast.error(
+        err.response?.data?.message || "Failed to send request back.",
+      );
     }
   };
 
@@ -372,7 +372,7 @@ export default function RequestsPage() {
         ? "Owner"
         : r.store?.name
       : r.requestType === "STORE_TO_STORE"
-        ? r.fromStore?.name ?? r.store?.name
+        ? (r.fromStore?.name ?? r.store?.name)
         : r.shop?.name || "—";
   const toLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
@@ -612,8 +612,13 @@ export default function RequestsPage() {
                   <table className="w-full">
                     <tbody>
                       {r.items.map((i: any, idx: number) => (
-                        <tr key={idx} className={idx > 0 ? "border-t border-gray-200" : ""}>
-                          <td className="py-1 pr-3 whitespace-nowrap">{i.product?.baseName}</td>
+                        <tr
+                          key={idx}
+                          className={idx > 0 ? "border-t border-gray-200" : ""}
+                        >
+                          <td className="py-1 pr-3 whitespace-nowrap">
+                            {i.product?.baseName}
+                          </td>
                           <td className="py-1 w-10 whitespace-nowrap text-gray-500">
                             {i.quantityRequested ?? "—"}
                           </td>
@@ -778,7 +783,12 @@ export default function RequestsPage() {
                       )
                     }
                     className="border p-2 rounded-lg bg-white"
-                    disabled={["DISPATCHED", "STORED", "RECEIVED", "PARTIALLY_RECEIVED"].includes(item.status)}
+                    disabled={[
+                      "DISPATCHED",
+                      "STORED",
+                      "RECEIVED",
+                      "PARTIALLY_RECEIVED",
+                    ].includes(item.status)}
                   >
                     <option value="PENDING">Pending</option>
                     <option value="APPROVED">Approve</option>
@@ -791,89 +801,94 @@ export default function RequestsPage() {
                   user?.isSuperuser &&
                   isStoreToOwner &&
                   selectedReq?.createdById !== user?.id && (
-                  <div className="flex flex-col gap-2">
-                    <select
-                      value={storeData?.status || item.status}
-                      onChange={(e) =>
-                        setOwnerStoreData(
-                          ownerStoreData.map((d) =>
-                            d.id === item.id
-                              ? { ...d, status: e.target.value }
-                              : d,
-                          ),
-                        )
-                      }
-                      className="border p-2 rounded-lg bg-white"
-                      disabled={["DISPATCHED", "STORED", "RECEIVED", "PARTIALLY_RECEIVED"].includes(item.status)}
-                    >
-                      <option value="PENDING">Pending</option>
-                      <option value="STORED">Store</option>
-                      <option value="REJECTED">Reject</option>
-                    </select>
-                    {(storeData?.status === "STORED" ||
-                      item.status === "STORED") && (
-                      <>
-                        <input
-                          type="number"
-                          min="0"
-                          placeholder="Qty Stored"
-                          value={storeData?.quantityStored ?? 0}
-                          onChange={(e) =>
-                            setOwnerStoreData(
-                              ownerStoreData.map((d) =>
-                                d.id === item.id
-                                  ? {
-                                      ...d,
-                                      quantityStored: Number(e.target.value),
-                                    }
-                                  : d,
-                              ),
-                            )
-                          }
-                          className="border p-1 rounded w-24 text-sm"
-                        />
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="Buy Price"
-                          value={storeData?.newBuyPrice ?? 0}
-                          onChange={(e) =>
-                            setOwnerStoreData(
-                              ownerStoreData.map((d) =>
-                                d.id === item.id
-                                  ? {
-                                      ...d,
-                                      newBuyPrice: Number(e.target.value),
-                                    }
-                                  : d,
-                              ),
-                            )
-                          }
-                          className="border p-1 rounded w-24 text-sm"
-                        />
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="Sell Price"
-                          value={storeData?.newSellPrice ?? 0}
-                          onChange={(e) =>
-                            setOwnerStoreData(
-                              ownerStoreData.map((d) =>
-                                d.id === item.id
-                                  ? {
-                                      ...d,
-                                      newSellPrice: Number(e.target.value),
-                                    }
-                                  : d,
-                              ),
-                            )
-                          }
-                          className="border p-1 rounded w-24 text-sm"
-                        />
-                      </>
-                    )}
-                  </div>
-                )}
+                    <div className="flex flex-col gap-2">
+                      <select
+                        value={storeData?.status || item.status}
+                        onChange={(e) =>
+                          setOwnerStoreData(
+                            ownerStoreData.map((d) =>
+                              d.id === item.id
+                                ? { ...d, status: e.target.value }
+                                : d,
+                            ),
+                          )
+                        }
+                        className="border p-2 rounded-lg bg-white"
+                        disabled={[
+                          "DISPATCHED",
+                          "STORED",
+                          "RECEIVED",
+                          "PARTIALLY_RECEIVED",
+                        ].includes(item.status)}
+                      >
+                        <option value="PENDING">Pending</option>
+                        <option value="STORED">Store</option>
+                        <option value="REJECTED">Reject</option>
+                      </select>
+                      {(storeData?.status === "STORED" ||
+                        item.status === "STORED") && (
+                        <>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="Qty Stored"
+                            value={storeData?.quantityStored ?? 0}
+                            onChange={(e) =>
+                              setOwnerStoreData(
+                                ownerStoreData.map((d) =>
+                                  d.id === item.id
+                                    ? {
+                                        ...d,
+                                        quantityStored: Number(e.target.value),
+                                      }
+                                    : d,
+                                ),
+                              )
+                            }
+                            className="border p-1 rounded w-24 text-sm"
+                          />
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="Buy Price"
+                            value={storeData?.newBuyPrice ?? 0}
+                            onChange={(e) =>
+                              setOwnerStoreData(
+                                ownerStoreData.map((d) =>
+                                  d.id === item.id
+                                    ? {
+                                        ...d,
+                                        newBuyPrice: Number(e.target.value),
+                                      }
+                                    : d,
+                                ),
+                              )
+                            }
+                            className="border p-1 rounded w-24 text-sm"
+                          />
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="Sell Price"
+                            value={storeData?.newSellPrice ?? 0}
+                            onChange={(e) =>
+                              setOwnerStoreData(
+                                ownerStoreData.map((d) =>
+                                  d.id === item.id
+                                    ? {
+                                        ...d,
+                                        newSellPrice: Number(e.target.value),
+                                      }
+                                    : d,
+                                ),
+                              )
+                            }
+                            className="border p-1 rounded w-24 text-sm"
+                          />
+                        </>
+                      )}
+                    </div>
+                  )}
 
                 {/* Storekeeper - Shop→Store: Dispatch */}
                 {!isClosed &&
@@ -1071,10 +1086,7 @@ export default function RequestsPage() {
                 !item.categoryId || String(p.categoryId) === item.categoryId,
             );
             return (
-              <div
-                key={idx}
-                className="border p-3 rounded-lg flex gap-2 items-end"
-              >
+              <div key={idx} className="border p-3 rounded-lg flex gap-2 ">
                 <div className="w-40">
                   <label className="block text-xs font-medium text-gray-500 mb-1">
                     Category
@@ -1134,7 +1146,8 @@ export default function RequestsPage() {
                             : "text-gray-500"
                         }`}
                       >
-                        Available at store: {storeStockMap[Number(item.productId)]}
+                        Available at store:{" "}
+                        {storeStockMap[Number(item.productId)]}
                       </p>
                     )}
                 </div>
