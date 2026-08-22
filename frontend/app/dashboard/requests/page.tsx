@@ -53,8 +53,6 @@ export default function RequestsPage() {
       requestItemId: number;
       productId: number;
       quantity: number;
-      quantityReceived: number;
-      dispatched: number;
       unitSellPrice: number;
       suggestedPrice: number;
       name: string;
@@ -163,20 +161,15 @@ export default function RequestsPage() {
     setSaleNotes("");
     setSaleItems(
       (r.items || [])
-        .filter((i: any) => isConfirmableItem(r, i))
-        .map((i: any) => {
-          const outstanding = outstandingFor(r, i);
-          return {
-            requestItemId: i.id,
-            productId: i.productId,
-            quantity: outstanding,
-            quantityReceived: outstanding,
-            dispatched: i.quantityDispatched ?? 0,
-            unitSellPrice: 0,
-            suggestedPrice: i.product?.currentSellPrice ?? 0,
-            name: `${i.product?.brand ?? ""} ${i.product?.baseName ?? ""}`.trim(),
-          };
-        }),
+        .filter((i: any) => i.status === "DISPATCHED")
+        .map((i: any) => ({
+          requestItemId: i.id,
+          productId: i.productId,
+          quantity: i.quantityDispatched ?? 0,
+          unitSellPrice: 0,
+          suggestedPrice: i.product?.currentSellPrice ?? 0,
+          name: `${i.product?.brand ?? ""} ${i.product?.baseName ?? ""}`.trim(),
+        })),
     );
     api
       .get("/payment-methods")
@@ -190,21 +183,9 @@ export default function RequestsPage() {
 
   const handleSubmitSale = async () => {
     if (!saleReq) return;
-    const items = saleItems.filter(
-      (i) => i.productId && (i.quantityReceived || 0) > 0,
-    );
+    const items = saleItems.filter((i) => i.productId && i.quantity > 0);
     if (items.length === 0) {
-      toast.error("No received items to confirm.");
-      return;
-    }
-    for (const i of items) {
-      if (i.quantity < 0 || i.quantity > i.quantityReceived) {
-        toast.error(`Cannot sell more than received for ${i.name || "an item"}.`);
-        return;
-      }
-    }
-    if (items.some((i) => i.quantity > 0 && !(i.unitSellPrice > 0))) {
-      toast.error("Sell price is required for each item being sold.");
+      toast.error("No items to sell.");
       return;
     }
     if (items.some((i) => !(i.unitSellPrice > 0))) {
@@ -231,7 +212,6 @@ export default function RequestsPage() {
         items: items.map((i) => ({
           id: i.requestItemId,
           quantity: i.quantity,
-          quantityReceived: i.quantityReceived,
           unitSellPrice: i.unitSellPrice,
         })),
         saleType,
@@ -242,11 +222,7 @@ export default function RequestsPage() {
         ...(customerId ? { customerId: Number(customerId) } : {}),
         ...(saleNotes.trim() ? { notes: saleNotes.trim() } : {}),
       });
-      toast.success(
-        items.some((i) => i.quantity > 0)
-          ? "Receipt confirmed and sale recorded!"
-          : "Receipt confirmed!",
-      );
+      toast.success("Receipt confirmed and sale recorded!");
       setSaleReq(null);
       setSelectedReq(null);
       fetchRequests();
@@ -402,8 +378,8 @@ export default function RequestsPage() {
       req.items.map((i: any) => ({
         id: i.id,
         quantityDispatched:
-          req.requestType !== "STORE_TO_OWNER" && isDispatchableItem(req, i)
-            ? remainingFor(req, i)
+          i.status === "APPROVED"
+            ? Math.max(0, (i.quantityRequested ?? 1) - i.quantityDispatched)
             : 0,
       })),
     );
@@ -411,10 +387,7 @@ export default function RequestsPage() {
       req.items.map((i: any) => ({
         id: i.id,
         status: i.status,
-        quantityStored:
-          req.requestType === "STORE_TO_OWNER" && isDispatchableItem(req, i)
-            ? remainingFor(req, i)
-            : i.quantityStored || 0,
+        quantityStored: i.quantityStored || (i.quantityRequested ?? 1),
         newBuyPrice: i.product?.currentBuyPrice || 0,
         newSellPrice: i.product?.currentSellPrice || 0,
       })),
@@ -422,7 +395,10 @@ export default function RequestsPage() {
     setReceivedData(
       req.items.map((i: any) => ({
         id: i.id,
-        quantityReceived: outstandingFor(req, i),
+        quantityReceived:
+          req.requestType === "STORE_TO_OWNER"
+            ? i.quantityStored || i.quantityRequested || 0
+            : i.quantityDispatched || i.quantityRequested || 0,
       })),
     );
   };
@@ -452,7 +428,7 @@ export default function RequestsPage() {
   const handleDispatch = async () => {
     const items = dispatchData.filter((d) => {
       const item = selectedReq?.items.find((i: any) => i.id === d.id);
-      return d.quantityDispatched > 0 && isDispatchableItem(selectedReq, item);
+      return d.quantityDispatched > 0 && item?.status === "APPROVED";
     });
     for (const d of items) {
       const item = selectedReq?.items.find((i: any) => i.id === d.id);
@@ -494,36 +470,12 @@ export default function RequestsPage() {
     return req.createdById === user?.id;
   };
 
-  // Keep-it-open: a request stays actionable until every item is fully
-  // received. `outstanding` = sent but not yet confirmed; `remaining` = still
-  // to be dispatched/stored.
-  const outstandingFor = (req: any, item: any) => {
-    const sent =
-      req?.requestType === "STORE_TO_OWNER"
-        ? item.quantityStored || 0
-        : item.quantityDispatched || 0;
-    return Math.max(0, sent - (item.quantityReceived || 0));
-  };
-  const remainingFor = (req: any, item: any) => {
-    const sent =
-      req?.requestType === "STORE_TO_OWNER"
-        ? item.quantityStored || 0
-        : item.quantityDispatched || 0;
-    return Math.max(0, (item.quantityRequested ?? 0) - sent);
-  };
-  const isConfirmableItem = (req: any, item: any) =>
-    ["APPROVED", "DISPATCHED", "STORED", "PARTIALLY_RECEIVED"].includes(
-      item.status,
-    ) && outstandingFor(req, item) > 0;
-  const isDispatchableItem = (req: any, item: any) =>
-    ["APPROVED", "DISPATCHED", "STORED", "PARTIALLY_RECEIVED"].includes(
-      item.status,
-    ) && remainingFor(req, item) > 0;
-
   const handleConfirmReceipt = async () => {
     if (!selectedReq) return;
-    const confirmable = selectedReq.items.filter((i: any) =>
-      isConfirmableItem(selectedReq, i),
+    const expected =
+      selectedReq.requestType === "STORE_TO_OWNER" ? "STORED" : "DISPATCHED";
+    const confirmable = selectedReq.items.filter(
+      (i: any) => i.status === expected,
     );
     if (confirmable.length === 0) {
       toast.error("No items ready for confirmation.");
@@ -542,25 +494,6 @@ export default function RequestsPage() {
     } catch (err: any) {
       markHandled(err);
       toast.error(err.response?.data?.message || "Confirmation failed.");
-    }
-  };
-
-  const handleCloseRequest = async () => {
-    if (!selectedReq) return;
-    if (
-      !window.confirm(
-        "Close this request? Any shortfall will be accepted and no further dispatches will be made.",
-      )
-    )
-      return;
-    try {
-      await api.post(`/requests/${selectedReq.id}/close`);
-      toast.success("Request closed.");
-      fetchRequests();
-      setSelectedReq(null);
-    } catch (err: any) {
-      markHandled(err);
-      toast.error(err.response?.data?.message || "Failed to close the request.");
     }
   };
 
@@ -700,12 +633,6 @@ export default function RequestsPage() {
           : r.requestType === "STORE_TO_STORE"
             ? "Next: receiving store to confirm receipt"
             : "Next: shop to confirm receipt";
-      case "PARTIALLY_RECEIVED":
-        return r.requestType === "STORE_TO_OWNER"
-          ? "Next: owner to store remaining"
-          : r.requestType === "STORE_TO_STORE"
-            ? "Next: source store to dispatch remaining"
-            : "Next: store to dispatch remaining";
       case "REJECTED":
         return "Rejected — edit or delete";
       case "CLOSED":
@@ -723,11 +650,9 @@ export default function RequestsPage() {
           ? "Next: owner to store/reject"
           : "Next: owner to approve";
       case "APPROVED":
-        return (item.quantityDispatched || 0) > 0
-          ? "Partially dispatched — awaiting receipt or more dispatch"
-          : r.requestType === "STORE_TO_STORE"
-            ? "Next: source store to dispatch"
-            : "Next: store to dispatch";
+        return r.requestType === "STORE_TO_STORE"
+          ? "Next: source store to dispatch"
+          : "Next: store to dispatch";
       case "STORED":
         return "Next: store to confirm receipt";
       case "DISPATCHED":
@@ -739,7 +664,7 @@ export default function RequestsPage() {
       case "RECEIVED":
         return "Received";
       case "PARTIALLY_RECEIVED":
-        return "Partially received — more can be dispatched or confirmed";
+        return "Shortage — review";
       default:
         return "";
     }
@@ -751,7 +676,6 @@ export default function RequestsPage() {
     "APPROVED",
     "REJECTED",
     "PARTIALLY_DISPATCHED",
-    "PARTIALLY_RECEIVED",
     "COMPLETED",
     "AWAITING_CONFIRMATION",
     "CLOSED",
@@ -954,11 +878,9 @@ export default function RequestsPage() {
                             ? "bg-blue-100 text-blue-800"
                             : r.status === "REJECTED"
                               ? "bg-red-100 text-red-800"
-                              : r.status === "PARTIALLY_RECEIVED"
-                                ? "bg-amber-100 text-amber-800"
-                                : r.status === "CLOSED"
-                                  ? "bg-gray-100 text-gray-600"
-                                  : "bg-green-100 text-green-800"
+                              : r.status === "CLOSED"
+                                ? "bg-gray-100 text-gray-600"
+                                : "bg-green-100 text-green-800"
                     }`}
                   >
                     {r.status === "AWAITING_CONFIRMATION"
@@ -1228,12 +1150,7 @@ export default function RequestsPage() {
                   selectedReq?.createdById !== user?.id && (
                     <div className="flex flex-col gap-2">
                       <select
-                        value={
-                          item.status === "STORED" ||
-                          item.status === "PARTIALLY_RECEIVED"
-                            ? "STORED"
-                            : storeData?.status || item.status
-                        }
+                        value={storeData?.status || item.status}
                         onChange={(e) =>
                           setOwnerStoreData(
                             ownerStoreData.map((d) =>
@@ -1244,15 +1161,19 @@ export default function RequestsPage() {
                           )
                         }
                         className="border p-2 rounded-lg bg-white"
-                        disabled={["RECEIVED", "SOLD"].includes(item.status)}
+                        disabled={[
+                          "DISPATCHED",
+                          "STORED",
+                          "RECEIVED",
+                          "PARTIALLY_RECEIVED",
+                        ].includes(item.status)}
                       >
                         <option value="PENDING">Pending</option>
                         <option value="STORED">Store</option>
                         <option value="REJECTED">Reject</option>
                       </select>
                       {(storeData?.status === "STORED" ||
-                        item.status === "STORED" ||
-                        item.status === "PARTIALLY_RECEIVED") && (
+                        item.status === "STORED") && (
                         <>
                           <input
                             type="number"
@@ -1319,14 +1240,13 @@ export default function RequestsPage() {
                 {/* Storekeeper - Shop→Store: Dispatch */}
                 {!isClosed &&
                   user?.locationType === "STORE" &&
-                  isDispatchableItem(selectedReq, item) &&
+                  item.status === "APPROVED" &&
                   !isStoreToOwner && (
                     <div className="flex items-center gap-2">
                       <span className="text-sm">Dispatch Qty:</span>
                       <input
                         type="number"
                         min="1"
-                        max={remainingFor(selectedReq, item)}
                         value={dispatch?.quantityDispatched || 0}
                         onChange={(e) =>
                           setDispatchData(
@@ -1348,13 +1268,14 @@ export default function RequestsPage() {
                 {/* Receiving party confirms — enter actual received qty */}
                 {!isClosed &&
                   canConfirmReceipt(selectedReq) &&
-                  isConfirmableItem(selectedReq, item) && (
+                  (isStoreToOwner
+                    ? item.status === "STORED"
+                    : item.status === "DISPATCHED") && (
                     <div className="flex items-center gap-2">
                       <span className="text-sm">Received Qty:</span>
                       <input
                         type="number"
                         min="1"
-                        max={outstandingFor(selectedReq, item)}
                         value={
                           receivedData.find((d) => d.id === item.id)
                             ?.quantityReceived ?? 0
@@ -1374,7 +1295,9 @@ export default function RequestsPage() {
                         className="border p-2 rounded-lg w-24"
                       />
                       {(() => {
-                        const expectedQty = outstandingFor(selectedReq, item);
+                        const expectedQty = isStoreToOwner
+                          ? item.quantityStored || 0
+                          : item.quantityDispatched || 0;
                         const enteredQty =
                           receivedData.find((d) => d.id === item.id)
                             ?.quantityReceived ?? 0;
@@ -1441,9 +1364,7 @@ export default function RequestsPage() {
               )}
             {canConfirmReceipt(selectedReq) &&
               selectedReq?.requestType === "SHOP_TO_STORE" &&
-              selectedReq?.items.some((i: any) =>
-                isConfirmableItem(selectedReq, i),
-              ) && (
+              selectedReq?.items.some((i: any) => i.status === "DISPATCHED") && (
                 <button
                   onClick={() => openSellModal(selectedReq)}
                   className="bg-indigo-600 text-white px-4 py-2 rounded-lg flex-1"
@@ -1453,27 +1374,15 @@ export default function RequestsPage() {
               )}
             {canConfirmReceipt(selectedReq) &&
               selectedReq?.items.some((i: any) =>
-                isConfirmableItem(selectedReq, i),
+                selectedReq.requestType === "STORE_TO_OWNER"
+                  ? i.status === "STORED"
+                  : i.status === "DISPATCHED",
               ) && (
                 <button
                   onClick={handleConfirmReceipt}
                   className="bg-emerald-600 text-white px-4 py-2 rounded-lg flex-1"
                 >
                   Confirm Receipt
-                </button>
-              )}
-            {canConfirmReceipt(selectedReq) &&
-              selectedReq?.status !== "CLOSED" &&
-              selectedReq?.items.some(
-                (i: any) =>
-                  isConfirmableItem(selectedReq, i) ||
-                  isDispatchableItem(selectedReq, i),
-              ) && (
-                <button
-                  onClick={handleCloseRequest}
-                  className="bg-red-600 text-white px-4 py-2 rounded-lg flex-1"
-                >
-                  Close Request
                 </button>
               )}
             <button
@@ -1666,9 +1575,8 @@ export default function RequestsPage() {
           {saleReq && (
             <>
               <p className="text-sm text-gray-500">
-                Enter the quantity actually received and the quantity to sell
-                now. Unsold received items stay in shop stock; shortages are
-                reported to the dispatcher.
+                Items will be received into shop stock and sold directly to the
+                customer. The sale is linked to this request.
               </p>
 
               <div className="space-y-2">
@@ -1679,40 +1587,12 @@ export default function RequestsPage() {
                   >
                     <div className="flex-1">
                       <p className="text-sm font-medium">{item.name || "—"}</p>
-                      <p className="text-[10px] text-gray-400">
-                        Dispatched: {item.dispatched ?? 0}
-                        {item.quantityReceived < (item.dispatched ?? 0)
-                          ? ` · shortage ${(item.dispatched ?? 0) - item.quantityReceived}`
-                          : ""}
-                      </p>
                     </div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <label className="text-xs text-gray-500">Received</label>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-500">Qty</label>
                       <input
                         type="number"
                         min="1"
-                        max={item.dispatched ?? 0}
-                        value={item.quantityReceived}
-                        onChange={(e) => {
-                          const received = Math.min(
-                            Number(e.target.value),
-                            item.dispatched ?? 0,
-                          );
-                          const next = [...saleItems];
-                          next[idx] = {
-                            ...next[idx],
-                            quantityReceived: received,
-                            quantity: Math.min(next[idx].quantity, received),
-                          };
-                          setSaleItems(next);
-                        }}
-                        className="border p-1.5 rounded-lg w-20 text-sm"
-                      />
-                      <label className="text-xs text-gray-500">Sell</label>
-                      <input
-                        type="number"
-                        min="0"
-                        max={item.quantityReceived}
                         value={item.quantity}
                         onChange={(e) => {
                           const next = [...saleItems];
@@ -1748,7 +1628,7 @@ export default function RequestsPage() {
                 ))}
                 {saleItems.length === 0 && (
                   <p className="text-sm text-gray-400">
-                    No items pending confirmation.
+                    No dispatched items to sell.
                   </p>
                 )}
               </div>

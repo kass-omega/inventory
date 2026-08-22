@@ -18,13 +18,8 @@ export class ConfirmSaleItemDto {
 
   @IsOptional()
   @IsInt()
-  @Min(0)
-  quantity?: number;
-
-  @IsOptional()
-  @IsInt()
   @IsPositive()
-  quantityReceived?: number;
+  quantity?: number;
 
   @IsOptional()
   @IsNumber()

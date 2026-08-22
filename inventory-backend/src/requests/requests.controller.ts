@@ -123,15 +123,4 @@ export class RequestsController {
   ) {
     return this.service.confirmReceiptAndSell(id, dto, req.user);
   }
-
-  // Explicitly close a request before it is fully fulfilled (accepted
-  // shortage / make-good not needed).
-  @Post(':id/close')
-  @Permissions('requests.confirm', 'requests.approve')
-  closeRequest(
-    @Param('id', ParseIntPipe) id: number,
-    @Req() req: RequestWithUser,
-  ) {
-    return this.service.closeRequest(id, req.user);
-  }
 }
