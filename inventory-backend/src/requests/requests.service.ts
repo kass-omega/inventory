@@ -584,56 +584,45 @@ export class RequestsService {
       where: { requestId },
     });
 
-    const allTerminal = items.every(
-      (i: any) =>
-        i.status === RequestItemStatus.RECEIVED ||
-        i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
-        i.status === RequestItemStatus.REJECTED ||
-        i.status === RequestItemStatus.SOLD,
-    );
-    const allRejected = items.every(
-      (i: any) => i.status === RequestItemStatus.REJECTED,
-    );
+    const isDone = (i: any) =>
+      i.status === RequestItemStatus.RECEIVED ||
+      i.status === RequestItemStatus.SOLD ||
+      i.status === RequestItemStatus.REJECTED;
 
-    if (allTerminal || allRejected)
-      return allRejected ? RequestStatus.REJECTED : RequestStatus.CLOSED;
+    if (items.length > 0 && items.every(isDone)) {
+      return items.every((i: any) => i.status === RequestItemStatus.REJECTED)
+        ? RequestStatus.REJECTED
+        : RequestStatus.CLOSED;
+    }
 
-    const someDispatchedOrStored = items.some(
+    // Anything sent but not yet confirmed keeps the request awaiting receipt.
+    const hasOutstanding = items.some(
       (i: any) =>
-        i.status === RequestItemStatus.DISPATCHED ||
-        i.status === RequestItemStatus.STORED,
+        !isDone(i) &&
+        Math.max(i.quantityDispatched || 0, i.quantityStored || 0) -
+          (i.quantityReceived || 0) >
+          0,
     );
+    if (hasOutstanding) return RequestStatus.AWAITING_CONFIRMATION;
+
+    // Partially received but nothing outstanding → still open for more dispatch.
+    const hasPartialReceipt = items.some(
+      (i: any) => !isDone(i) && (i.quantityReceived || 0) > 0,
+    );
+    if (hasPartialReceipt) return RequestStatus.PARTIALLY_RECEIVED;
+
     const someApproved = items.some(
       (i: any) => i.status === RequestItemStatus.APPROVED,
     );
-    const allApprovedOrBeyond = items.every(
-      (i: any) =>
-        i.status === RequestItemStatus.APPROVED ||
-        i.status === RequestItemStatus.DISPATCHED ||
-        i.status === RequestItemStatus.STORED ||
-        i.status === RequestItemStatus.RECEIVED ||
-        i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
-        i.status === RequestItemStatus.REJECTED ||
-        i.status === RequestItemStatus.SOLD,
+    const somePending = items.some(
+      (i: any) => i.status === RequestItemStatus.PENDING,
     );
-    const allDispatchedOrBeyond = items.every(
-      (i: any) =>
-        i.status === RequestItemStatus.DISPATCHED ||
-        i.status === RequestItemStatus.STORED ||
-        i.status === RequestItemStatus.RECEIVED ||
-        i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
-        i.status === RequestItemStatus.REJECTED ||
-        i.status === RequestItemStatus.SOLD,
+    const someRejected = items.some(
+      (i: any) => i.status === RequestItemStatus.REJECTED,
     );
-
-    if (allDispatchedOrBeyond && someDispatchedOrStored)
-      return RequestStatus.AWAITING_CONFIRMATION;
-    if (allApprovedOrBeyond && someApproved && !someDispatchedOrStored)
-      return RequestStatus.APPROVED;
-    if (someApproved && !allApprovedOrBeyond)
+    if (someApproved && (somePending || someRejected))
       return RequestStatus.PARTIALLY_APPROVED;
-    if (someDispatchedOrStored && !allDispatchedOrBeyond)
-      return RequestStatus.PARTIALLY_DISPATCHED;
+    if (someApproved) return RequestStatus.APPROVED;
     return RequestStatus.PENDING;
   }
 
@@ -676,6 +665,14 @@ export class RequestsService {
             );
           }
 
+          // Skip items already fully fulfilled — keep-it-open.
+          if (
+            item.status === RequestItemStatus.RECEIVED ||
+            item.status === RequestItemStatus.SOLD
+          ) {
+            continue;
+          }
+
           if (update.status === RequestItemStatus.STORED) {
             const qty = update.quantityStored || 0;
             if (qty <= 0) {
@@ -683,9 +680,22 @@ export class RequestsService {
                 `Quantity stored is required for ${item.product.brand} ${item.product.baseName}`,
               );
             }
+            const requestedQty = item.quantityRequested ?? qty;
+            const totalStored = (item.quantityStored || 0) + qty;
+            if (totalStored > requestedQty) {
+              throw new BadRequestException(
+                `Cannot store more than the requested amount (${requestedQty}) for ${item.product.brand} ${item.product.baseName}`,
+              );
+            }
             await tx.requestItem.update({
               where: { id: update.id },
-              data: { status: update.status, quantityStored: qty },
+              data: {
+                status:
+                  item.quantityReceived > 0
+                    ? RequestItemStatus.PARTIALLY_RECEIVED
+                    : RequestItemStatus.STORED,
+                quantityStored: totalStored,
+              },
             });
 
             if (
@@ -711,6 +721,11 @@ export class RequestsService {
               });
             }
           } else {
+            if ((item.quantityReceived || 0) > 0) {
+              throw new BadRequestException(
+                `Cannot reject ${item.product.brand} ${item.product.baseName} — it was already partially received`,
+              );
+            }
             await tx.requestItem.update({
               where: { id: update.id },
               data: { status: update.status },
@@ -831,6 +846,7 @@ export class RequestsService {
       request.status !== RequestStatus.APPROVED &&
       request.status !== RequestStatus.PARTIALLY_APPROVED &&
       request.status !== RequestStatus.PARTIALLY_DISPATCHED &&
+      request.status !== RequestStatus.PARTIALLY_RECEIVED &&
       request.status !== RequestStatus.COMPLETED
     ) {
       throw new BadRequestException('Request must be (partially) approved before dispatch');
@@ -844,9 +860,13 @@ export class RequestsService {
         if (data.quantityDispatched <= 0) continue;
         const item = request.items.find((i) => i.id === data.id);
         if (!item) throw new BadRequestException('Invalid item in dispatch data');
-        if (item.status !== RequestItemStatus.APPROVED) {
-          // Skip items that weren't approved (partial approvals) instead of
-          // aborting the whole dispatch.
+        if (
+          item.status !== RequestItemStatus.APPROVED &&
+          item.status !== RequestItemStatus.DISPATCHED &&
+          item.status !== RequestItemStatus.PARTIALLY_RECEIVED
+        ) {
+          // Skip items that aren't dispatchable (partial approvals, already
+          // fulfilled) instead of aborting the whole dispatch.
           continue;
         }
         const requestedQty = item.quantityRequested ?? data.quantityDispatched;
@@ -863,13 +883,21 @@ export class RequestsService {
           throw new BadRequestException(`Insufficient stock for ${item.product.baseName}`);
         }
 
-        const totalDispatched = item.quantityDispatched + data.quantityDispatched;
-        const targetQty = item.quantityRequested ?? data.quantityDispatched;
+        // The source store loses the goods as soon as they are dispatched. The
+        // receiver only gains the quantity it actually confirms on arrival.
+        await tx.inventory.update({
+          where: { id: storeInventory.id },
+          data: { quantity: { decrement: data.quantityDispatched } },
+        });
+
         await tx.requestItem.update({
           where: { id: item.id },
           data: {
             quantityDispatched: { increment: data.quantityDispatched },
-            status: totalDispatched >= targetQty ? RequestItemStatus.DISPATCHED : RequestItemStatus.APPROVED,
+            status:
+              item.quantityReceived > 0
+                ? RequestItemStatus.PARTIALLY_RECEIVED
+                : RequestItemStatus.DISPATCHED,
           },
         });
       }
@@ -951,72 +979,60 @@ export class RequestsService {
         const item = request.items.find((i) => i.id === update.id);
         if (!item) throw new BadRequestException(`Invalid item ID: ${update.id}`);
 
-        const validPrevStatus = isStoreToOwner
-          ? RequestItemStatus.STORED
-          : RequestItemStatus.DISPATCHED;
-
-        if (item.status !== validPrevStatus) {
-          throw new BadRequestException(
-            `Item must be ${validPrevStatus} (current: ${item.status})`,
-          );
-        }
-
         const dispatchedOrStoredQty = isStoreToOwner
           ? item.quantityStored || 0
           : item.quantityDispatched || 0;
+        // Quantity sent but not yet confirmed on the receiving side.
+        const outstanding = dispatchedOrStoredQty - (item.quantityReceived || 0);
+        if (outstanding <= 0) {
+          throw new BadRequestException(
+            `Nothing pending confirmation for ${item.product?.brand ?? ''} ${item.product?.baseName ?? ''}`,
+          );
+        }
 
-        // Default to the stocked/dispatched amount, unless the receiver
-        // submits the actual received quantity.
-        const receivedQty = update.quantityReceived ?? dispatchedOrStoredQty;
+        // Default to the full outstanding amount, unless the receiver submits
+        // the actual received quantity.
+        const receivedQty = update.quantityReceived ?? outstanding;
         if (receivedQty <= 0) {
           throw new BadRequestException('Received quantity must be greater than 0');
         }
+        if (receivedQty > outstanding) {
+          throw new BadRequestException(
+            `Cannot confirm more than the dispatched amount (${outstanding}) for ${item.product?.brand ?? ''} ${item.product?.baseName ?? ''}`,
+          );
+        }
 
         if (isStoreToOwner) {
+          // Owner's goods arrive at the store — no source deduction.
           await tx.inventory.upsert({
             where: { productId_locationId: { productId: item.productId, locationId: request.storeId } },
             update: { quantity: { increment: receivedQty } },
             create: { productId: item.productId, locationId: request.storeId, quantity: receivedQty },
           });
-        } else if (isStoreToStore) {
-          if (dispatchedOrStoredQty > 0 && request.fromStoreId) {
-            await tx.inventory.update({
-              where: { productId_locationId: { productId: item.productId, locationId: request.fromStoreId } },
-              data: { quantity: { decrement: dispatchedOrStoredQty } },
-            });
-            await tx.inventory.upsert({
-              where: { productId_locationId: { productId: item.productId, locationId: request.storeId } },
-              update: { quantity: { increment: receivedQty } },
-              create: { productId: item.productId, locationId: request.storeId, quantity: receivedQty },
-            });
-          }
         } else {
-          if (dispatchedOrStoredQty > 0 && request.shopId) {
-            const storeInv = await tx.inventory.findUnique({
-              where: { productId_locationId: { productId: item.productId, locationId: request.storeId } },
-            });
-            if (storeInv) {
-              await tx.inventory.update({
-                where: { id: storeInv.id },
-                data: { quantity: { decrement: dispatchedOrStoredQty } },
-              });
-            }
+          // The source store was already deducted at dispatch time; the
+          // receiver only gains what actually arrived.
+          const receiverId = isStoreToStore ? request.storeId : request.shopId;
+          if (receiverId) {
             await tx.inventory.upsert({
-              where: { productId_locationId: { productId: item.productId, locationId: request.shopId } },
+              where: { productId_locationId: { productId: item.productId, locationId: receiverId } },
               update: { quantity: { increment: receivedQty } },
-              create: { productId: item.productId, locationId: request.shopId, quantity: receivedQty },
+              create: { productId: item.productId, locationId: receiverId, quantity: receivedQty },
             });
           }
         }
 
-        const hasShortage = receivedQty < dispatchedOrStoredQty;
+        const totalReceived = (item.quantityReceived || 0) + receivedQty;
+        const requestedQty = item.quantityRequested ?? 0;
+        const fulfilled = requestedQty > 0 && totalReceived >= requestedQty;
+        const hasShortage = receivedQty < outstanding;
         await tx.requestItem.update({
           where: { id: update.id },
           data: {
-            status: hasShortage
-              ? RequestItemStatus.PARTIALLY_RECEIVED
-              : RequestItemStatus.RECEIVED,
-            quantityReceived: receivedQty,
+            status: fulfilled
+              ? RequestItemStatus.RECEIVED
+              : RequestItemStatus.PARTIALLY_RECEIVED,
+            quantityReceived: totalReceived,
             confirmedById: user.sub,
             confirmedAt: new Date(),
           },
@@ -1027,15 +1043,14 @@ export class RequestsService {
           data: {
             userId: user.sub,
             action: 'CONFIRM_RECEIPT',
-            details: `Confirmed receipt of ${receivedQty} (of ${dispatchedOrStoredQty}) at ${receiptLabel}`,
+            details: `Confirmed receipt of ${receivedQty} (of ${outstanding} pending) at ${receiptLabel}`,
           },
         });
 
-        // A gap between what was dispatched/stored and what actually arrived is
-        // recorded so the dispatcher can investigate or make good the missing
-        // quantity. Only the actually-received amount is added to stock above.
+        // A gap between what was pending and what actually arrived is recorded
+        // so the dispatcher can investigate or make good the missing quantity.
         if (hasShortage) {
-          const gap = dispatchedOrStoredQty - receivedQty;
+          const gap = outstanding - receivedQty;
           const productName = `${item.product.brand} ${item.product.baseName}`;
           shortageNotices.push({
             toOwner: isStoreToOwner,
@@ -1044,7 +1059,7 @@ export class RequestsService {
             locationId: isStoreToStore
               ? (request.fromStoreId as number)
               : request.storeId,
-            message: `Request #${requestId}: ${productName} — expected ${dispatchedOrStoredQty}, received ${receivedQty} (${gap} missing).`,
+            message: `Request #${requestId}: ${productName} — expected ${outstanding}, received ${receivedQty} (${gap} missing).`,
           });
         }
       }
@@ -1099,10 +1114,12 @@ export class RequestsService {
     return txResult;
   }
 
-  // Shopkeeper confirms receipt AND sells the goods directly to a customer.
-  // The dispatched goods enter the shop's inventory (normal confirm), then a
-  // normal sale is recorded against that stock in the same transaction, and the
-  // request items are marked SOLD (request closes).
+  // Shopkeeper confirms receipt AND sells some or all of the goods directly to
+  // a customer. The received goods enter the shop's inventory, the sold
+  // quantity is recorded as a normal sale in the same transaction, and each
+  // item is marked SOLD / RECEIVED / PARTIALLY_RECEIVED depending on how much
+  // arrived and how much was sold. The request stays open until every item is
+  // fully fulfilled or explicitly closed.
   async confirmReceiptAndSell(
     requestId: number,
     dto: ConfirmSaleDto,
@@ -1129,8 +1146,13 @@ export class RequestsService {
     }
     const shopId: number = request.shopId;
 
-    return this.prisma.$transaction(async (tx) => {
-      // 1. Confirm receipt (store −, shop +) and mark items SOLD.
+    const shortageNotices: {
+      toOwner: boolean;
+      locationId: number;
+      message: string;
+    }[] = [];
+
+    const txResult = await this.prisma.$transaction(async (tx) => {
       const saleItemInputs: {
         productId: number;
         quantity: number;
@@ -1142,36 +1164,32 @@ export class RequestsService {
         if (!item) {
           throw new BadRequestException('Invalid item in sale data');
         }
-        if (item.status !== RequestItemStatus.DISPATCHED) {
+
+        const dispatchedQty = item.quantityDispatched || 0;
+        const outstanding = dispatchedQty - (item.quantityReceived || 0);
+        if (outstanding <= 0) {
           throw new BadRequestException(
-            `${item.product?.brand ?? ''} ${item.product?.baseName ?? ''} is not ready for confirmation`,
+            `${item.product?.brand ?? ''} ${item.product?.baseName ?? ''} has nothing pending confirmation`,
           );
         }
-        const qty = sold.quantity ?? item.quantityDispatched ?? 0;
-        if (qty <= 0) {
-          throw new BadRequestException('Quantity must be greater than zero');
+        const receivedQty = sold.quantityReceived ?? outstanding;
+        if (receivedQty <= 0) {
+          throw new BadRequestException('Received quantity must be greater than zero');
         }
-
-        // Source (store) loses the goods.
-        const storeInv = await tx.inventory.findUnique({
-          where: {
-            productId_locationId: {
-              productId: item.productId,
-              locationId: request.storeId,
-            },
-          },
-        });
-        if (!storeInv || storeInv.quantity < qty) {
+        if (receivedQty > outstanding) {
           throw new BadRequestException(
-            `Insufficient stock for ${item.product?.brand ?? ''} ${item.product?.baseName ?? ''}`,
+            `Cannot receive more than the dispatched amount (${outstanding}) for ${item.product?.brand ?? ''} ${item.product?.baseName ?? ''}`,
           );
         }
-        await tx.inventory.update({
-          where: { id: storeInv.id },
-          data: { quantity: { decrement: qty } },
-        });
+        const soldQty = sold.quantity ?? receivedQty;
+        if (soldQty < 0 || soldQty > receivedQty) {
+          throw new BadRequestException(
+            `Sold quantity must be between 0 and the received amount (${receivedQty}) for ${item.product?.brand ?? ''} ${item.product?.baseName ?? ''}`,
+          );
+        }
 
-        // Destination (shop) receives the goods.
+        // Destination (shop) receives what actually arrived. The source store
+        // was already deducted at dispatch time.
         await tx.inventory.upsert({
           where: {
             productId_locationId: {
@@ -1179,51 +1197,74 @@ export class RequestsService {
               locationId: shopId,
             },
           },
-          update: { quantity: { increment: qty } },
+          update: { quantity: { increment: receivedQty } },
           create: {
             productId: item.productId,
             locationId: shopId,
-            quantity: qty,
+            quantity: receivedQty,
           },
         });
 
-        // Mark the item SOLD.
+        const totalReceived = (item.quantityReceived || 0) + receivedQty;
+        const requestedQty = item.quantityRequested ?? 0;
+        const fulfilled = requestedQty > 0 && totalReceived >= requestedQty;
         await tx.requestItem.update({
           where: { id: item.id },
           data: {
-            status: RequestItemStatus.SOLD,
-            quantityReceived: qty,
+            status: fulfilled
+              ? soldQty >= receivedQty
+                ? RequestItemStatus.SOLD
+                : RequestItemStatus.RECEIVED
+              : RequestItemStatus.PARTIALLY_RECEIVED,
+            quantityReceived: totalReceived,
             confirmedById: user.sub,
             confirmedAt: new Date(),
           },
         });
 
-        saleItemInputs.push({
-          productId: item.productId,
-          quantity: qty,
-          ...(sold.unitSellPrice != null
-            ? { customPrice: sold.unitSellPrice }
-            : {}),
-        });
+        if (soldQty > 0) {
+          saleItemInputs.push({
+            productId: item.productId,
+            quantity: soldQty,
+            ...(sold.unitSellPrice != null
+              ? { customPrice: sold.unitSellPrice }
+              : {}),
+          });
+        }
+
+        // A gap between what was pending and what actually arrived is reported
+        // so the dispatcher can investigate or make good the missing quantity.
+        if (receivedQty < outstanding) {
+          shortageNotices.push({
+            toOwner: false,
+            locationId: request.storeId,
+            message: `Request #${requestId}: ${item.product?.brand ?? ''} ${item.product?.baseName ?? ''} — expected ${outstanding}, received ${receivedQty} (${outstanding - receivedQty} missing).`,
+          });
+        }
       }
 
-      // 2. Create the normal sale (deducts from the shop inventory that was
-      // just added) and link it back to this request.
-      const sale = await this.sales.createSale(
-        {
-          shopId,
-          items: saleItemInputs,
-          saleType: dto.saleType,
-          paidAmount: dto.paidAmount,
-          paymentMethodId: dto.paymentMethodId,
-          customerId: dto.customerId,
-          notes: dto.notes ?? `Direct sale from request #${requestId}`,
-        },
-        user,
-        { tx, requestId },
-      );
+      // 2. Create the normal sale (deducts the sold quantity from the shop
+      // inventory that was just added) and link it back to this request. When
+      // nothing is sold (all items stocked), no sale is created — it is a
+      // plain receipt confirmation.
+      let sale: any = null;
+      if (saleItemInputs.length > 0) {
+        sale = await this.sales.createSale(
+          {
+            shopId,
+            items: saleItemInputs,
+            saleType: dto.saleType,
+            paidAmount: dto.paidAmount,
+            paymentMethodId: dto.paymentMethodId,
+            customerId: dto.customerId,
+            notes: dto.notes ?? `Direct sale from request #${requestId}`,
+          },
+          user,
+          { tx, requestId },
+        );
+      }
 
-      // 3. Close the request (SOLD counts as terminal).
+      // 3. Re-evaluate the request status (open until fully fulfilled).
       const newStatus = await this.evaluateRequestStatus(tx, requestId);
       await tx.stockRequest.update({
         where: { id: requestId },
@@ -1233,20 +1274,100 @@ export class RequestsService {
       await this.createActivity(
         tx,
         requestId,
-        'SOLD_ON_RECEIPT',
+        sale ? 'SOLD_ON_RECEIPT' : 'CONFIRMED',
         user.sub,
-        `Sale #${sale.invoiceNumber} — ${saleItemInputs.length} item(s) sold directly`,
+        sale
+          ? `Sale #${sale.invoiceNumber} — ${saleItemInputs.length} item(s) sold directly`
+          : 'Confirmed receipt (no items sold)',
       );
 
       await tx.auditLog.create({
         data: {
           userId: user.sub,
           action: 'SALE_ON_RECEIPT',
-          details: `Request #${requestId}: confirmed receipt and sold ${saleItemInputs.length} item(s) as sale #${sale.invoiceNumber}`,
+          details: `Request #${requestId}: confirmed receipt and sold ${saleItemInputs.length} item(s) as sale #${sale?.invoiceNumber ?? '—'}`,
         },
       });
 
       return { requestId, sale };
+    });
+
+    // Report any gaps between what was sent and what was actually received.
+    for (const notice of shortageNotices) {
+      if (notice.toOwner) {
+        await this.notifications.notifyOwner('Shortage Reported', notice.message);
+        continue;
+      }
+      await this.notifications.notifyLocation(
+        'Shortage Reported',
+        notice.message,
+        notice.locationId,
+      );
+    }
+
+    return txResult;
+  }
+
+  // Explicitly close a request that will never be fully fulfilled (shortage
+  // accepted / make-good not needed). Open items with any movement become
+  // final PARTIALLY_RECEIVED; untouched items are REJECTED.
+  async closeRequest(requestId: number, user: JwtPayload) {
+    const request = await this.prisma.stockRequest.findUnique({
+      where: { id: requestId },
+      include: { items: true },
+    });
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.status === RequestStatus.CLOSED) {
+      throw new BadRequestException('Request is already closed');
+    }
+
+    if (request.requestType === RequestType.STORE_TO_OWNER) {
+      const receivingStorekeeper =
+        user.locationType === 'STORE' && user.locationId === request.storeId;
+      if (!user.isSuperuser && !receivingStorekeeper) {
+        throw new ForbiddenException(
+          'Only the receiving storekeeper or the owner can close this request',
+        );
+      }
+    } else if (request.createdById !== user.sub && !user.isSuperuser) {
+      throw new ForbiddenException(
+        'Only the request creator or the owner can close this request',
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const openItems = request.items.filter(
+        (i) =>
+          i.status !== RequestItemStatus.RECEIVED &&
+          i.status !== RequestItemStatus.SOLD &&
+          i.status !== RequestItemStatus.REJECTED,
+      );
+      for (const item of openItems) {
+        const touched =
+          (item.quantityDispatched || 0) > 0 ||
+          (item.quantityStored || 0) > 0 ||
+          (item.quantityReceived || 0) > 0;
+        await tx.requestItem.update({
+          where: { id: item.id },
+          data: {
+            status: touched
+              ? RequestItemStatus.PARTIALLY_RECEIVED
+              : RequestItemStatus.REJECTED,
+          },
+        });
+      }
+
+      await this.createActivity(
+        tx,
+        requestId,
+        'CLOSED',
+        user.sub,
+        'Request closed with partial fulfilment',
+      );
+      return tx.stockRequest.update({
+        where: { id: requestId },
+        data: { status: RequestStatus.CLOSED },
+      });
     });
   }
 }
