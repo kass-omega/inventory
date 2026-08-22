@@ -849,6 +849,12 @@ export class RequestsService {
           // aborting the whole dispatch.
           continue;
         }
+        const requestedQty = item.quantityRequested ?? data.quantityDispatched;
+        if (item.quantityDispatched + data.quantityDispatched > requestedQty) {
+          throw new BadRequestException(
+            "Cannot dispatch more than the requested amount (" + requestedQty + ") for " + (item.product?.brand ?? "") + " " + (item.product?.baseName ?? ""),
+          );
+        }
 
         const storeInventory = await tx.inventory.findUnique({
           where: { productId_locationId: { productId: item.productId, locationId: sourceLocationId } },

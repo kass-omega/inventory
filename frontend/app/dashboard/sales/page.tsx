@@ -1511,32 +1511,32 @@ export default function SalesPage() {
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="p-2 text-left">Item</th>
-                    <th className="p-2 text-right">Qty</th>
-                    <th className="p-2 text-right">Unit</th>
-                    <th className="p-2 text-right">Subtotal</th>
+                    <th className="p-2 text-right whitespace-nowrap">Qty</th>
+                    <th className="p-2 text-right whitespace-nowrap">Unit</th>
+                    <th className="p-2 text-right whitespace-nowrap">Subtotal</th>
                   </tr>
                 </thead>
                 <tbody>
                   {viewingSale.items.length === 0 && viewingSale.purchase ? (
                     <tr>
-                      <td className="p-2">{viewingSale.purchase.productName}</td>
-                      <td className="p-2 text-right">{viewingSale.purchase.quantity}</td>
-                      <td className="p-2 text-right">
+                      <td className="p-2 whitespace-nowrap">{viewingSale.purchase.productName}</td>
+                      <td className="p-2 text-right whitespace-nowrap">{viewingSale.purchase.quantity}</td>
+                      <td className="p-2 text-right whitespace-nowrap">
                         {viewingSale.purchase.sellPrice.toFixed(2)}
                       </td>
-                      <td className="p-2 text-right">
+                      <td className="p-2 text-right whitespace-nowrap">
                         {viewingSale.totalAmount.toFixed(2)}
                       </td>
                     </tr>
                   ) : (
                     viewingSale.items.map((i: any, idx: number) => (
                       <tr key={idx} className="border-t">
-                        <td className="p-2">
+                        <td className="p-2 whitespace-nowrap">
                           {i.product?.brand} {i.product?.baseName}
                         </td>
-                        <td className="p-2 text-right">{i.quantity}</td>
-                        <td className="p-2 text-right">{i.unitSellPrice.toFixed(2)}</td>
-                        <td className="p-2 text-right">
+                        <td className="p-2 text-right whitespace-nowrap">{i.quantity}</td>
+                        <td className="p-2 text-right whitespace-nowrap">{i.unitSellPrice.toFixed(2)}</td>
+                        <td className="p-2 text-right whitespace-nowrap">
                           {(i.unitSellPrice * i.quantity).toFixed(2)}
                         </td>
                       </tr>

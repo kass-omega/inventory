@@ -1,7 +1,6 @@
 "use client";
 import BarcodeScanner from "@/app/components/BarcodeScanner";
 import { useConfirm } from "@/app/components/ConfirmProvider";
-import CustomerForm from "@/app/components/CustomerForm";
 import FilterRow, { FilterField } from "@/app/components/FilterRow";
 import Modal from "@/app/components/Modal";
 import Loading from "@/app/components/Loading";
@@ -55,6 +54,7 @@ export default function RequestsPage() {
       productId: number;
       quantity: number;
       unitSellPrice: number;
+      suggestedPrice: number;
       name: string;
     }[]
   >([]);
@@ -66,7 +66,9 @@ export default function RequestsPage() {
   const [paymentMethodId, setPaymentMethodId] = useState("");
   const [customers, setCustomers] = useState<any[]>([]);
   const [customerId, setCustomerId] = useState("");
-  const [showCustomerForm, setShowCustomerForm] = useState(false);
+  const [newPaymentMethodName, setNewPaymentMethodName] = useState("");
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
   const [saleNotes, setSaleNotes] = useState("");
   const [savingSale, setSavingSale] = useState(false);
 
@@ -157,7 +159,6 @@ export default function RequestsPage() {
     setPaymentMethodId("");
     setCustomerId("");
     setSaleNotes("");
-    setShowCustomerForm(false);
     setSaleItems(
       (r.items || [])
         .filter((i: any) => i.status === "DISPATCHED")
@@ -165,7 +166,8 @@ export default function RequestsPage() {
           requestItemId: i.id,
           productId: i.productId,
           quantity: i.quantityDispatched ?? 0,
-          unitSellPrice: i.product?.currentSellPrice ?? 0,
+          unitSellPrice: 0,
+          suggestedPrice: i.product?.currentSellPrice ?? 0,
           name: `${i.product?.brand ?? ""} ${i.product?.baseName ?? ""}`.trim(),
         })),
     );
@@ -184,6 +186,10 @@ export default function RequestsPage() {
     const items = saleItems.filter((i) => i.productId && i.quantity > 0);
     if (items.length === 0) {
       toast.error("No items to sell.");
+      return;
+    }
+    if (items.some((i) => !(i.unitSellPrice > 0))) {
+      toast.error("Sell price is required for each item.");
       return;
     }
     if (
@@ -225,6 +231,38 @@ export default function RequestsPage() {
       toast.error(err.response?.data?.message || "Failed to record the sale.");
     } finally {
       setSavingSale(false);
+    }
+  };
+
+  const handleAddPaymentMethod = async () => {
+    const name = newPaymentMethodName.trim();
+    if (!name) return;
+    try {
+      const res = await api.post("/payment-methods", { name });
+      setPaymentMethods((prev) => [...prev, res.data]);
+      setPaymentMethodId(String(res.data.id));
+      setNewPaymentMethodName("");
+    } catch (err: any) {
+      markHandled(err);
+      toast.error("Failed to add payment method.");
+    }
+  };
+
+  const handleAddCustomer = async () => {
+    const name = newCustomerName.trim();
+    if (!name) return;
+    try {
+      const res = await api.post("/customers", {
+        name,
+        ...(newCustomerPhone.trim() ? { phone: newCustomerPhone.trim() } : {}),
+      });
+      setCustomers((prev) => [...prev, res.data]);
+      setCustomerId(String(res.data.id));
+      setNewCustomerName("");
+      setNewCustomerPhone("");
+    } catch (err: any) {
+      markHandled(err);
+      toast.error("Failed to add customer.");
     }
   };
 
@@ -359,8 +397,8 @@ export default function RequestsPage() {
         id: i.id,
         quantityReceived:
           req.requestType === "STORE_TO_OWNER"
-            ? i.quantityStored || 0
-            : i.quantityDispatched || 0,
+            ? i.quantityStored || i.quantityRequested || 0
+            : i.quantityDispatched || i.quantityRequested || 0,
       })),
     );
   };
@@ -392,6 +430,21 @@ export default function RequestsPage() {
       const item = selectedReq?.items.find((i: any) => i.id === d.id);
       return d.quantityDispatched > 0 && item?.status === "APPROVED";
     });
+    for (const d of items) {
+      const item = selectedReq?.items.find((i: any) => i.id === d.id);
+      if (!item) continue;
+      const name = (String(item.product?.brand ?? "") + " " + String(item.product?.baseName ?? "")).trim() || ("Item #" + item.id);
+      const requested = item.quantityRequested ?? d.quantityDispatched;
+      const already = item.quantityDispatched || 0;
+      if (d.quantityDispatched < 1) {
+        toast.error("Quantity must be at least 1 for " + name + ".");
+        return;
+      }
+      if (already + d.quantityDispatched > requested) {
+        toast.error("Cannot dispatch more than the requested amount (" + requested + ") for " + name + ".");
+        return;
+      }
+    }
     if (items.length === 0) {
       toast.error("No approved items to dispatch.");
       return;
@@ -733,19 +786,19 @@ export default function RequestsPage() {
         <table className="w-full text-left min-w-[600px] sm:min-w-[700px] text-xs sm:text-sm">
           <thead className="bg-gray-50 border-b">
             <tr>
-              <th className="p-2 sm:p-3 md:p-4">ID</th>
-              <th className="p-2 sm:p-3 md:p-4">Type</th>
-              <th className="p-2 sm:p-3 md:p-4">From</th>
-              <th className="p-2 sm:p-3 md:p-4">To</th>
-              <th className="p-2 sm:p-3 md:p-4">
+              <th className="p-2 sm:p-3 md:p-4 whitespace-nowrap">ID</th>
+              <th className="p-2 sm:p-3 md:p-4 whitespace-nowrap">Type</th>
+              <th className="p-2 sm:p-3 md:p-4 whitespace-nowrap">From</th>
+              <th className="p-2 sm:p-3 md:p-4 whitespace-nowrap">To</th>
+              <th className="p-2 sm:p-3 md:p-4 whitespace-nowrap">
                 <span className="block">Items Summary</span>
                 <span className="mt-0.5 flex text-[10px] uppercase font-medium text-gray-400">
                   <span className="flex-1 text-center">Name</span>
                   <span className="w-10 text-center">Qty</span>
                 </span>
               </th>
-              <th className="p-2 sm:p-3 md:p-4">Status</th>
-              <th className="p-2 sm:p-3 md:p-4">Action</th>
+              <th className="p-2 sm:p-3 md:p-4 whitespace-nowrap">Status</th>
+              <th className="p-2 sm:p-3 md:p-4 whitespace-nowrap">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -755,8 +808,8 @@ export default function RequestsPage() {
                 onClick={() => openDetail(r)}
                 className="border-b hover:bg-gray-50 cursor-pointer"
               >
-                <td className="p-2 sm:p-3 md:p-4 font-medium">#{r.id}</td>
-                <td className="p-2 sm:p-3 md:p-4">
+                <td className="p-2 sm:p-3 md:p-4 whitespace-nowrap font-medium">#{r.id}</td>
+                <td className="p-2 sm:p-3 md:p-4 whitespace-nowrap">
                   <span
                     className={`px-3 py-0.5 sm:py-1 text-[10px] sm:text-xs rounded-full font-semibold ${
                       r.requestType === "STORE_TO_OWNER"
@@ -769,7 +822,7 @@ export default function RequestsPage() {
                     {typeLabel(r)}
                   </span>
                 </td>
-                <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm font-medium">
+                <td className="p-2 sm:p-3 md:p-4 whitespace-nowrap text-xs sm:text-sm font-medium">
                   {fromLabel(r)}
                   {r.createdByName && (
                     <div className="text-[10px] text-gray-400 font-normal">
@@ -777,10 +830,10 @@ export default function RequestsPage() {
                     </div>
                   )}
                 </td>
-                <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm text-gray-600">
+                <td className="p-2 sm:p-3 md:p-4 whitespace-nowrap text-xs sm:text-sm text-gray-600">
                   {toLabel(r)}
                 </td>
-                <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm text-gray-600">
+                <td className="p-2 sm:p-3 md:p-4 whitespace-nowrap text-xs sm:text-sm text-gray-600">
                   <table className="w-full">
                     <tbody>
                       {(r.items.length > 3 ? r.items.slice(0, 2) : r.items).map(
@@ -813,7 +866,7 @@ export default function RequestsPage() {
                     </tbody>
                   </table>
                 </td>
-                <td className="p-2 sm:p-3 md:p-4">
+                <td className="p-2 sm:p-3 md:p-4 whitespace-nowrap">
                   <span
                     className={`px-1.5 sm:px-2 py-0.5 sm:py-1 text-[10px] sm:text-xs rounded-full font-semibold ${
                       r.status === "PENDING"
@@ -838,7 +891,7 @@ export default function RequestsPage() {
                     {nextActorForRequest(r)}
                   </div>
                 </td>
-                <td className="p-2 sm:p-3 md:p-4" onClick={(e) => e.stopPropagation()}>
+                <td className="p-2 sm:p-3 md:p-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                   <RowActionsMenu
                     items={[
                       { label: "Manage", onClick: () => openManageModal(r) },
@@ -931,32 +984,32 @@ export default function RequestsPage() {
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="p-2 text-left">Product</th>
-                        <th className="p-2 text-right">Requested</th>
-                        <th className="p-2 text-right">Dispatched</th>
-                        <th className="p-2 text-right">Stored</th>
-                        <th className="p-2 text-right">Received</th>
+                        <th className="p-2 text-right whitespace-nowrap">Requested</th>
+                        <th className="p-2 text-right whitespace-nowrap">Dispatched</th>
+                        <th className="p-2 text-right whitespace-nowrap">Stored</th>
+                        <th className="p-2 text-right whitespace-nowrap">Received</th>
                         <th className="p-2 text-left">Status</th>
                       </tr>
                     </thead>
                     <tbody>
                       {selectedReq.items.map((item: any) => (
                         <tr key={item.id} className="border-t">
-                          <td className="p-2">
+                          <td className="p-2 whitespace-nowrap">
                             {item.product?.brand} {item.product?.baseName}
                           </td>
-                          <td className="p-2 text-right">
+                          <td className="p-2 text-right whitespace-nowrap">
                             {item.quantityRequested ?? "—"}
                           </td>
-                          <td className="p-2 text-right">
+                          <td className="p-2 text-right whitespace-nowrap">
                             {item.quantityDispatched ?? 0}
                           </td>
-                          <td className="p-2 text-right">
+                          <td className="p-2 text-right whitespace-nowrap">
                             {item.quantityStored ?? 0}
                           </td>
-                          <td className="p-2 text-right">
+                          <td className="p-2 text-right whitespace-nowrap">
                             {item.quantityReceived ?? 0}
                           </td>
-                          <td className="p-2">
+                          <td className="p-2 whitespace-nowrap">
                             {item.status.replace(/_/g, " ")}
                           </td>
                         </tr>
@@ -1193,7 +1246,7 @@ export default function RequestsPage() {
                       <span className="text-sm">Dispatch Qty:</span>
                       <input
                         type="number"
-                        min="0"
+                        min="1"
                         value={dispatch?.quantityDispatched || 0}
                         onChange={(e) =>
                           setDispatchData(
@@ -1556,15 +1609,18 @@ export default function RequestsPage() {
                         type="number"
                         step="0.01"
                         min="0"
-                        value={item.unitSellPrice}
+                        value={item.unitSellPrice === 0 ? "" : item.unitSellPrice}
                         onChange={(e) => {
                           const next = [...saleItems];
                           next[idx] = {
                             ...next[idx],
-                            unitSellPrice: Number(e.target.value),
+                            unitSellPrice: e.target.value === "" ? 0 : Number(e.target.value),
                           };
                           setSaleItems(next);
                         }}
+                        placeholder={item.suggestedPrice
+                          ? `${item.suggestedPrice.toFixed(2)} (default)`
+                          : "0.00 (default)"}
                         className="border p-1.5 rounded-lg w-24 text-sm"
                       />
                     </div>
@@ -1575,6 +1631,16 @@ export default function RequestsPage() {
                     No dispatched items to sell.
                   </p>
                 )}
+              </div>
+
+              <div className="flex items-center justify-between border-t pt-2">
+                <span className="text-sm font-medium text-gray-600">Total</span>
+                <span className="text-lg font-bold text-gray-900">
+                  {saleItems
+                    .reduce((sum, i) => sum + (i.quantity || 0) * (i.unitSellPrice || 0), 0)
+                    .toFixed(2)}{" "}
+                  birr
+                </span>
               </div>
 
               <div>
@@ -1622,6 +1688,21 @@ export default function RequestsPage() {
                       </option>
                     ))}
                   </select>
+                  <div className="flex gap-2 mt-1">
+                    <input
+                      value={newPaymentMethodName}
+                      onChange={(e) => setNewPaymentMethodName(e.target.value)}
+                      placeholder="New payment method"
+                      className="border p-2 rounded-lg flex-1 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddPaymentMethod}
+                      className="bg-gray-200 px-3 rounded-lg text-sm"
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1651,13 +1732,6 @@ export default function RequestsPage() {
                       <span className="text-red-500">*</span>
                     )}
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setShowCustomerForm(true)}
-                    className="text-xs text-blue-600 hover:underline"
-                  >
-                    + New customer
-                  </button>
                 </div>
                 <select
                   value={customerId}
@@ -1671,6 +1745,27 @@ export default function RequestsPage() {
                     </option>
                   ))}
                 </select>
+                <div className="flex gap-2 mt-1">
+                  <input
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    placeholder="New customer name"
+                    className="border p-2 rounded-lg flex-1 text-sm"
+                  />
+                  <input
+                    value={newCustomerPhone}
+                    onChange={(e) => setNewCustomerPhone(e.target.value)}
+                    placeholder="Phone (optional)"
+                    className="border p-2 rounded-lg w-32 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddCustomer}
+                    className="bg-gray-200 px-3 rounded-lg text-sm"
+                  >
+                    +
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -1706,21 +1801,6 @@ export default function RequestsPage() {
           )}
         </div>
 
-        {/* New customer modal */}
-        <Modal
-          isOpen={showCustomerForm}
-          onClose={() => setShowCustomerForm(false)}
-          title="New Customer"
-        >
-          <CustomerForm
-            onCreated={(customer: any) => {
-              setCustomers((prev) => [...prev, customer]);
-              setCustomerId(String(customer.id));
-              setShowCustomerForm(false);
-            }}
-            onCancel={() => setShowCustomerForm(false)}
-          />
-        </Modal>
       </Modal>
     </div>
   );
