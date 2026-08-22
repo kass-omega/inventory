@@ -1,6 +1,7 @@
 "use client";
 import BarcodeScanner from "@/app/components/BarcodeScanner";
 import { useConfirm } from "@/app/components/ConfirmProvider";
+import CustomerForm from "@/app/components/CustomerForm";
 import FilterRow, { FilterField } from "@/app/components/FilterRow";
 import Modal from "@/app/components/Modal";
 import Loading from "@/app/components/Loading";
@@ -9,7 +10,9 @@ import SearchableSelect from "@/app/components/SearchableSelect";
 import { useToast } from "@/app/components/ToastProvider";
 import { useAuth } from "@/context/AuthContext";
 import api, { markHandled } from "@/lib/api";
-import { useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/datetime";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 export default function RequestsPage() {
   const { user, hasPermission } = useAuth();
@@ -41,6 +44,31 @@ export default function RequestsPage() {
   const [receivedData, setReceivedData] = useState<
     { id: number; quantityReceived: number }[]
   >([]);
+  // Status-change timeline for the open request detail.
+  const [activities, setActivities] = useState<any[]>([]);
+
+  // Direct sale ("Confirm Receipt & Sell") modal state.
+  const [saleReq, setSaleReq] = useState<any>(null);
+  const [saleItems, setSaleItems] = useState<
+    {
+      requestItemId: number;
+      productId: number;
+      quantity: number;
+      unitSellPrice: number;
+      name: string;
+    }[]
+  >([]);
+  const [saleType, setSaleType] = useState<
+    "FULLY_PAID" | "PARTIALLY_PAID" | "CREDITED"
+  >("FULLY_PAID");
+  const [paidAmount, setPaidAmount] = useState("");
+  const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
+  const [paymentMethodId, setPaymentMethodId] = useState("");
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [customerId, setCustomerId] = useState("");
+  const [showCustomerForm, setShowCustomerForm] = useState(false);
+  const [saleNotes, setSaleNotes] = useState("");
+  const [savingSale, setSavingSale] = useState(false);
 
   // New Request Modal states
   const [showReqModal, setShowReqModal] = useState(false);
@@ -60,14 +88,14 @@ export default function RequestsPage() {
 
   const [loading, setLoading] = useState(true);
 
-  const fetchRequests = async () => {
-    setLoading(true);
+  const fetchRequests = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const query = `status=${statusFilter}&locationId=${locationFilter}&categoryId=${categoryFilter}&productId=${productFilter}&startDate=${startDate}&endDate=${endDate}`;
       const res = await api.get(`/requests?${query}`);
       setRequests(res.data);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -90,6 +118,130 @@ export default function RequestsPage() {
     startDate,
     endDate,
   ]);
+
+  // Silent auto-refresh every 5s + on focus: keeps the list fresh without a
+  // loading flash so it never interrupts what the user is doing.
+  const fetchRef = useRef(fetchRequests);
+  useEffect(() => {
+    fetchRef.current = fetchRequests;
+  }, [fetchRequests]);
+  useEffect(() => {
+    const id = setInterval(() => fetchRef.current(true), 5000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") fetchRef.current(true);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onVisibility);
+    };
+  }, []);
+
+  const openDetail = async (r: any) => {
+    openManageModal(r);
+    setActivities([]);
+    try {
+      const res = await api.get(`/requests/${r.id}`);
+      setActivities(res.data.activities || []);
+    } catch {
+      setActivities([]);
+    }
+  };
+
+  const openSellModal = (r: any) => {
+    setSaleReq(r);
+    setSaleType("FULLY_PAID");
+    setPaidAmount("");
+    setPaymentMethodId("");
+    setCustomerId("");
+    setSaleNotes("");
+    setShowCustomerForm(false);
+    setSaleItems(
+      (r.items || [])
+        .filter((i: any) => i.status === "DISPATCHED")
+        .map((i: any) => ({
+          requestItemId: i.id,
+          productId: i.productId,
+          quantity: i.quantityDispatched ?? 0,
+          unitSellPrice: i.product?.currentSellPrice ?? 0,
+          name: `${i.product?.brand ?? ""} ${i.product?.baseName ?? ""}`.trim(),
+        })),
+    );
+    api
+      .get("/payment-methods")
+      .then((res) => setPaymentMethods(res.data))
+      .catch(() => {});
+    api
+      .get("/customers")
+      .then((res) => setCustomers(res.data))
+      .catch(() => {});
+  };
+
+  const handleSubmitSale = async () => {
+    if (!saleReq) return;
+    const items = saleItems.filter((i) => i.productId && i.quantity > 0);
+    if (items.length === 0) {
+      toast.error("No items to sell.");
+      return;
+    }
+    if (
+      (saleType === "FULLY_PAID" || saleType === "PARTIALLY_PAID") &&
+      !paymentMethodId
+    ) {
+      toast.error("Payment method is required.");
+      return;
+    }
+    if (
+      (saleType === "PARTIALLY_PAID" || saleType === "CREDITED") &&
+      !customerId
+    ) {
+      toast.error("Customer is required for credit or partial payments.");
+      return;
+    }
+    setSavingSale(true);
+    try {
+      await api.post(`/requests/${saleReq.id}/confirm-sale`, {
+        items: items.map((i) => ({
+          id: i.requestItemId,
+          quantity: i.quantity,
+          unitSellPrice: i.unitSellPrice,
+        })),
+        saleType,
+        ...(paidAmount ? { paidAmount: Number(paidAmount) } : {}),
+        ...(paymentMethodId
+          ? { paymentMethodId: Number(paymentMethodId) }
+          : {}),
+        ...(customerId ? { customerId: Number(customerId) } : {}),
+        ...(saleNotes.trim() ? { notes: saleNotes.trim() } : {}),
+      });
+      toast.success("Receipt confirmed and sale recorded!");
+      setSaleReq(null);
+      setSelectedReq(null);
+      fetchRequests();
+    } catch (err: any) {
+      markHandled(err);
+      toast.error(err.response?.data?.message || "Failed to record the sale.");
+    } finally {
+      setSavingSale(false);
+    }
+  };
+
+  // Deep-link: /dashboard/requests?req=<id> opens that request's detail.
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const id = searchParams.get("req");
+    if (!id) return;
+    api
+      .get(`/requests/${id}`)
+      .then((res) => {
+        openManageModal(res.data);
+        setActivities(res.data.activities || []);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Load the selected store's stock so shopkeepers can see availability while
   // composing (or editing) a request.
@@ -187,10 +339,10 @@ export default function RequestsPage() {
     setDispatchData(
       req.items.map((i: any) => ({
         id: i.id,
-        quantityDispatched: Math.max(
-          0,
-          (i.quantityRequested ?? 1) - i.quantityDispatched,
-        ),
+        quantityDispatched:
+          i.status === "APPROVED"
+            ? Math.max(0, (i.quantityRequested ?? 1) - i.quantityDispatched)
+            : 0,
       })),
     );
     setOwnerStoreData(
@@ -236,10 +388,16 @@ export default function RequestsPage() {
   };
 
   const handleDispatch = async () => {
+    const items = dispatchData.filter((d) => {
+      const item = selectedReq?.items.find((i: any) => i.id === d.id);
+      return d.quantityDispatched > 0 && item?.status === "APPROVED";
+    });
+    if (items.length === 0) {
+      toast.error("No approved items to dispatch.");
+      return;
+    }
     try {
-      await api.post(`/requests/${selectedReq.id}/dispatch`, {
-        items: dispatchData,
-      });
+      await api.post(`/requests/${selectedReq.id}/dispatch`, { items });
       setSelectedReq(null);
       fetchRequests();
     } catch (err: any) {
@@ -592,7 +750,11 @@ export default function RequestsPage() {
           </thead>
           <tbody>
             {requests.map((r: any) => (
-              <tr key={r.id} className="border-b hover:bg-gray-50">
+              <tr
+                key={r.id}
+                onClick={() => openDetail(r)}
+                className="border-b hover:bg-gray-50 cursor-pointer"
+              >
                 <td className="p-2 sm:p-3 md:p-4 font-medium">#{r.id}</td>
                 <td className="p-2 sm:p-3 md:p-4">
                   <span
@@ -621,19 +783,33 @@ export default function RequestsPage() {
                 <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm text-gray-600">
                   <table className="w-full">
                     <tbody>
-                      {r.items.map((i: any, idx: number) => (
-                        <tr
-                          key={idx}
-                          className={idx > 0 ? "border-t border-gray-200" : ""}
-                        >
-                          <td className="py-1 pr-3 whitespace-nowrap">
-                            {i.product?.baseName}
-                          </td>
-                          <td className="py-1 w-10 whitespace-nowrap text-gray-500">
-                            {i.quantityRequested ?? "—"}
+                      {(r.items.length > 3 ? r.items.slice(0, 2) : r.items).map(
+                        (i: any, idx: number) => (
+                          <tr
+                            key={idx}
+                            className={
+                              idx > 0 ? "border-t border-gray-200" : ""
+                            }
+                          >
+                            <td className="py-1 pr-3 whitespace-nowrap">
+                              {i.product?.baseName}
+                            </td>
+                            <td className="py-1 w-10 whitespace-nowrap text-gray-500">
+                              {i.quantityRequested ?? i.quantityStored ?? "—"}
+                            </td>
+                          </tr>
+                        ),
+                      )}
+                      {r.items.length > 3 && (
+                        <tr className="border-t border-gray-200">
+                          <td
+                            colSpan={2}
+                            className="py-1 text-blue-600 font-medium"
+                          >
+                            +{r.items.length - 2} more items
                           </td>
                         </tr>
-                      ))}
+                      )}
                     </tbody>
                   </table>
                 </td>
@@ -662,7 +838,7 @@ export default function RequestsPage() {
                     {nextActorForRequest(r)}
                   </div>
                 </td>
-                <td className="p-2 sm:p-3 md:p-4">
+                <td className="p-2 sm:p-3 md:p-4" onClick={(e) => e.stopPropagation()}>
                   <RowActionsMenu
                     items={[
                       { label: "Manage", onClick: () => openManageModal(r) },
@@ -706,13 +882,121 @@ export default function RequestsPage() {
         </table>
       </div>
 
-      {/* Manage Request Modal */}
+      {/* Manage / Detail Request Modal */}
       <Modal
         isOpen={!!selectedReq}
         onClose={() => setSelectedReq(null)}
-        title={`Manage Request #${selectedReq?.id}`}
+        title={`Request #${selectedReq?.id}`}
       >
         <div className="space-y-4">
+          {selectedReq && (
+            <>
+              {/* Request summary */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-gray-700 border-b pb-3">
+                <div>
+                  <span className="text-gray-400">Type:</span>{" "}
+                  {typeLabel(selectedReq)}
+                </div>
+                <div>
+                  <span className="text-gray-400">Status:</span>{" "}
+                  <span className="font-medium">
+                    {selectedReq.status.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400">From:</span>{" "}
+                  {fromLabel(selectedReq)}
+                </div>
+                <div>
+                  <span className="text-gray-400">To:</span>{" "}
+                  {toLabel(selectedReq)}
+                </div>
+                <div>
+                  <span className="text-gray-400">Created by:</span>{" "}
+                  {selectedReq.createdByName || "—"}
+                </div>
+                <div>
+                  <span className="text-gray-400">Created at:</span>{" "}
+                  {formatDateTime(selectedReq.createdAt)}
+                </div>
+              </div>
+
+              {/* All items */}
+              <div>
+                <p className="text-sm font-semibold text-gray-600 mb-1">
+                  Items ({selectedReq.items.length})
+                </p>
+                <div className="border rounded-lg overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="p-2 text-left">Product</th>
+                        <th className="p-2 text-right">Requested</th>
+                        <th className="p-2 text-right">Dispatched</th>
+                        <th className="p-2 text-right">Stored</th>
+                        <th className="p-2 text-right">Received</th>
+                        <th className="p-2 text-left">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedReq.items.map((item: any) => (
+                        <tr key={item.id} className="border-t">
+                          <td className="p-2">
+                            {item.product?.brand} {item.product?.baseName}
+                          </td>
+                          <td className="p-2 text-right">
+                            {item.quantityRequested ?? "—"}
+                          </td>
+                          <td className="p-2 text-right">
+                            {item.quantityDispatched ?? 0}
+                          </td>
+                          <td className="p-2 text-right">
+                            {item.quantityStored ?? 0}
+                          </td>
+                          <td className="p-2 text-right">
+                            {item.quantityReceived ?? 0}
+                          </td>
+                          <td className="p-2">
+                            {item.status.replace(/_/g, " ")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Status-change timeline */}
+              {activities.length > 0 && (
+                <div>
+                  <p className="text-sm font-semibold text-gray-600 mb-1">
+                    Status History
+                  </p>
+                  <div className="space-y-2">
+                    {activities.map((a: any) => (
+                      <div
+                        key={a.id}
+                        className="flex items-start gap-2 text-xs"
+                      >
+                        <span className="mt-0.5 h-2 w-2 rounded-full bg-blue-500 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-gray-800">
+                            <span className="font-medium">
+                              {a.action.replace(/_/g, " ")}
+                            </span>
+                            {a.details ? ` — ${a.details}` : ""}
+                          </p>
+                          <p className="text-gray-400">
+                            {a.actorName || "—"} · {formatDateTime(a.createdAt)}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
           {selectedReq?.items.map((item: any) => {
             const update = itemUpdates.find((u) => u.id === item.id);
             const dispatch = dispatchData.find((d) => d.id === item.id);
@@ -1026,6 +1310,16 @@ export default function RequestsPage() {
                 </button>
               )}
             {canConfirmReceipt(selectedReq) &&
+              selectedReq?.requestType === "SHOP_TO_STORE" &&
+              selectedReq?.items.some((i: any) => i.status === "DISPATCHED") && (
+                <button
+                  onClick={() => openSellModal(selectedReq)}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-lg flex-1"
+                >
+                  Confirm Receipt & Sell
+                </button>
+              )}
+            {canConfirmReceipt(selectedReq) &&
               selectedReq?.items.some((i: any) =>
                 selectedReq.requestType === "STORE_TO_OWNER"
                   ? i.status === "STORED"
@@ -1096,8 +1390,8 @@ export default function RequestsPage() {
                 !item.categoryId || String(p.categoryId) === item.categoryId,
             );
             return (
-              <div key={idx} className="border p-3 rounded-lg flex gap-2 ">
-                <div className="w-40">
+              <div key={idx} className="border p-3 rounded-lg flex flex-col gap-2 sm:flex-row">
+                <div className="sm:w-40">
                   <label className="block text-xs font-medium text-gray-500 mb-1">
                     Category
                   </label>
@@ -1122,7 +1416,8 @@ export default function RequestsPage() {
                     ))}
                   </select>
                 </div>
-                <div className="flex-1">
+                <div className="flex gap-2 items-start sm:flex-1">
+                  <div className="flex-1">
                   <label className="block text-xs font-medium text-gray-500 mb-1">
                     Product
                   </label>
@@ -1188,6 +1483,7 @@ export default function RequestsPage() {
                     ✕
                   </button>
                 )}
+                </div>
               </div>
             );
           })}
@@ -1214,6 +1510,217 @@ export default function RequestsPage() {
             {editingReq ? "Update Request" : "Submit Request"}
           </button>
         </form>
+      </Modal>
+
+      {/* Confirm Receipt & Sell — Direct Sale Modal */}
+      <Modal
+        isOpen={!!saleReq}
+        onClose={() => setSaleReq(null)}
+        title={`Sell from Request #${saleReq?.id}`}
+      >
+        <div className="space-y-4">
+          {saleReq && (
+            <>
+              <p className="text-sm text-gray-500">
+                Items will be received into shop stock and sold directly to the
+                customer. The sale is linked to this request.
+              </p>
+
+              <div className="space-y-2">
+                {saleItems.map((item, idx) => (
+                  <div
+                    key={idx}
+                    className="border rounded-lg p-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3"
+                  >
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">{item.name || "—"}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-500">Qty</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={item.quantity}
+                        onChange={(e) => {
+                          const next = [...saleItems];
+                          next[idx] = {
+                            ...next[idx],
+                            quantity: Number(e.target.value),
+                          };
+                          setSaleItems(next);
+                        }}
+                        className="border p-1.5 rounded-lg w-20 text-sm"
+                      />
+                      <label className="text-xs text-gray-500">Price</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={item.unitSellPrice}
+                        onChange={(e) => {
+                          const next = [...saleItems];
+                          next[idx] = {
+                            ...next[idx],
+                            unitSellPrice: Number(e.target.value),
+                          };
+                          setSaleItems(next);
+                        }}
+                        className="border p-1.5 rounded-lg w-24 text-sm"
+                      />
+                    </div>
+                  </div>
+                ))}
+                {saleItems.length === 0 && (
+                  <p className="text-sm text-gray-400">
+                    No dispatched items to sell.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-gray-500 mb-1">
+                  Sale Type
+                </p>
+                <div className="flex gap-2">
+                  {(["FULLY_PAID", "PARTIALLY_PAID", "CREDITED"] as const).map(
+                    (t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setSaleType(t)}
+                        className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                          saleType === t
+                            ? "bg-blue-600 text-white border-blue-600"
+                            : "bg-white text-gray-600 border-gray-300"
+                        }`}
+                      >
+                        {t === "FULLY_PAID"
+                          ? "Paid"
+                          : t === "PARTIALLY_PAID"
+                            ? "Partial"
+                            : "Credit"}
+                      </button>
+                    ),
+                  )}
+                </div>
+              </div>
+
+              {(saleType === "FULLY_PAID" || saleType === "PARTIALLY_PAID") && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    Payment Method
+                  </label>
+                  <select
+                    value={paymentMethodId}
+                    onChange={(e) => setPaymentMethodId(e.target.value)}
+                    className="border p-2 rounded-lg w-full bg-white text-sm"
+                  >
+                    <option value="">Select</option>
+                    {paymentMethods.map((m: any) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {saleType === "PARTIALLY_PAID" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    Paid Amount
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={paidAmount}
+                    onChange={(e) => setPaidAmount(e.target.value)}
+                    className="border p-2 rounded-lg w-full text-sm"
+                    placeholder="0.00"
+                  />
+                </div>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-sm font-medium text-gray-500">
+                    Customer{" "}
+                    {(saleType === "PARTIALLY_PAID" ||
+                      saleType === "CREDITED") && (
+                      <span className="text-red-500">*</span>
+                    )}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomerForm(true)}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    + New customer
+                  </button>
+                </div>
+                <select
+                  value={customerId}
+                  onChange={(e) => setCustomerId(e.target.value)}
+                  className="border p-2 rounded-lg w-full bg-white text-sm"
+                >
+                  <option value="">Select customer</option>
+                  {customers.map((c: any) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-1">
+                  Notes
+                </label>
+                <textarea
+                  value={saleNotes}
+                  onChange={(e) => setSaleNotes(e.target.value)}
+                  className="border p-2 rounded-lg w-full text-sm"
+                  rows={2}
+                  placeholder="Optional"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSubmitSale}
+                  disabled={savingSale || saleItems.length === 0}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-lg flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {savingSale && <Loading size="sm" />}
+                  {savingSale ? "Saving..." : "Confirm & Sell"}
+                </button>
+                <button
+                  onClick={() => setSaleReq(null)}
+                  className="bg-gray-200 px-4 py-2 rounded-lg"
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* New customer modal */}
+        <Modal
+          isOpen={showCustomerForm}
+          onClose={() => setShowCustomerForm(false)}
+          title="New Customer"
+        >
+          <CustomerForm
+            onCreated={(customer: any) => {
+              setCustomers((prev) => [...prev, customer]);
+              setCustomerId(String(customer.id));
+              setShowCustomerForm(false);
+            }}
+            onCancel={() => setShowCustomerForm(false)}
+          />
+        </Modal>
       </Modal>
     </div>
   );

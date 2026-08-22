@@ -11,7 +11,9 @@ import { useConfirm } from "@/app/components/ConfirmProvider";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/app/components/ToastProvider";
 import api, { markHandled } from "@/lib/api";
-import { useEffect, useMemo, useState } from "react";
+import { formatDateTime } from "@/lib/datetime";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 interface Product {
   id: number;
@@ -37,6 +39,7 @@ type DatePreset = "today" | "week" | "month" | "year";
 
 export default function SalesPage() {
   const { user, hasPermission } = useAuth();
+  const router = useRouter();
   const toast = useToast();
   const confirm = useConfirm();
   const [sales, setSales] = useState([]);
@@ -105,13 +108,13 @@ export default function SalesPage() {
     hasPermission("sales.return") &&
     (isOwner || (user?.locationType === "SHOP" && user?.locationId === r.shopId));
 
-  const fetchSales = async () => {
-    setLoading(true);
+  const fetchSales = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const res = await api.get("/sales");
       setSales(res.data);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -190,6 +193,26 @@ export default function SalesPage() {
     fetchCategories();
     api.get("/payment-methods").then((r) => setPaymentMethods(r.data));
     api.get("/customers").then((r) => setCustomers(r.data));
+  }, []);
+
+  // Silent auto-refresh every 5s + on focus: keeps sales fresh without a
+  // loading flash so it never interrupts what the user is doing.
+  const salesFetchRef = useRef(fetchSales);
+  useEffect(() => {
+    salesFetchRef.current = fetchSales;
+  }, [fetchSales]);
+  useEffect(() => {
+    const id = setInterval(() => salesFetchRef.current(true), 5000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") salesFetchRef.current(true);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onVisibility);
+    };
   }, []);
 
   useEffect(() => {
@@ -1054,9 +1077,20 @@ export default function SalesPage() {
                       Quick flip
                     </span>
                   )}
+                  {s.requestId && (
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        router.push(`/dashboard/requests?req=${s.requestId}`);
+                      }}
+                      className="ml-2 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] rounded font-sans font-semibold cursor-pointer hover:bg-indigo-200"
+                    >
+                      Req #{s.requestId}
+                    </span>
+                  )}
                 </td>
                 <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm text-gray-500">
-                  {s.saleDate?.slice(0, 10) || "—"}
+                  {formatDateTime(s.saleDate)}
                 </td>
                 {isOwner && (
                   <td className="p-2 sm:p-3 md:p-4 text-xs sm:text-sm">
@@ -1076,12 +1110,33 @@ export default function SalesPage() {
                   ) : (
                     <table className="w-full">
                       <tbody>
-                        {s.items.map((i: any, idx: number) => (
-                          <tr key={idx} className={idx > 0 ? "border-t border-gray-200" : ""}>
-                            <td className="py-1 pr-3 whitespace-nowrap">{i.product.baseName}</td>
-                            <td className="py-1 w-10 whitespace-nowrap text-gray-500">{i.quantity}</td>
+                        {(s.items.length > 3 ? s.items.slice(0, 2) : s.items).map(
+                          (i: any, idx: number) => (
+                            <tr
+                              key={idx}
+                              className={
+                                idx > 0 ? "border-t border-gray-200" : ""
+                              }
+                            >
+                              <td className="py-1 pr-3 whitespace-nowrap">
+                                {i.product.baseName}
+                              </td>
+                              <td className="py-1 w-10 whitespace-nowrap text-gray-500">
+                                {i.quantity}
+                              </td>
+                            </tr>
+                          ),
+                        )}
+                        {s.items.length > 3 && (
+                          <tr className="border-t border-gray-200">
+                            <td
+                              colSpan={2}
+                              className="py-1 text-blue-600 font-medium"
+                            >
+                              +{s.items.length - 2} more items
+                            </td>
                           </tr>
-                        ))}
+                        )}
                       </tbody>
                     </table>
                   )}
@@ -1406,7 +1461,7 @@ export default function SalesPage() {
             <div className="grid grid-cols-2 gap-2 text-gray-700">
               <div>
                 <span className="text-gray-400">Date:</span>{" "}
-                {viewingSale.saleDate?.slice(0, 10) || "—"}
+                {formatDateTime(viewingSale.saleDate)}
               </div>
               <div>
                 <span className="text-gray-400">Shop:</span>{" "}
@@ -1428,6 +1483,21 @@ export default function SalesPage() {
                 <span className="text-gray-400">Payment:</span>{" "}
                 {viewingSale.paymentMethod?.name || "—"}
               </div>
+              {viewingSale.requestId && (
+                <div className="col-span-2">
+                  <span className="text-gray-400">Request:</span>{" "}
+                  <button
+                    onClick={() =>
+                      router.push(
+                        `/dashboard/requests?req=${viewingSale.requestId}`,
+                      )
+                    }
+                    className="text-indigo-600 font-medium hover:underline"
+                  >
+                    #{viewingSale.requestId}
+                  </button>
+                </div>
+              )}
               {viewingSale.customer && (
                 <div className="col-span-2">
                   <span className="text-gray-400">Customer:</span>{" "}
