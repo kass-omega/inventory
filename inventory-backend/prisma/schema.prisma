@@ -45,6 +45,7 @@ enum RequestItemStatus {
   STORED
   RECEIVED
   PARTIALLY_RECEIVED
+  SOLD
 }
 
 enum SaleType {
@@ -214,6 +215,8 @@ model StockRequest {
   createdById  Int
   approvedById Int?
   items        RequestItem[]
+  activities   RequestActivity[]
+  sales        Sale[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -243,6 +246,20 @@ model RequestItem {
   @@index([productId])
 }
 
+// Timeline of status changes for a stock request (who changed it, when).
+model RequestActivity {
+  id        Int          @id @default(autoincrement())
+  requestId Int
+  request   StockRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  action    String // e.g. CREATED, APPROVED, STORED, REJECTED, DISPATCHED, CONFIRMED, SENT_BACK
+  actorId   Int
+  details   String?
+  createdAt DateTime     @default(now())
+
+  @@index([requestId])
+  @@index([createdAt])
+}
+
 // --- Sales & Profit Tracking ---
 model Sale {
   id               Int           @id @default(autoincrement())
@@ -269,6 +286,8 @@ model Sale {
   returns          Return[]
   purchaseId       Int?           @unique
   purchase         Purchase?      @relation(fields: [purchaseId], references: [id])
+  requestId        Int?
+  request          StockRequest?  @relation(fields: [requestId], references: [id], onDelete: SetNull)
 }
 
 model SaleItem {

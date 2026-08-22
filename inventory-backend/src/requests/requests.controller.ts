@@ -15,6 +15,7 @@ import { RequestItemStatus } from '@prisma/client';
 import { Permissions } from '../common/decorators/permissions/permissions.decorator';
 import { RequestWithUser } from '../common/interfaces/request-with-user.interface';
 import { ConfirmReceiptDto } from './dto/confirm-receipt.dto';
+import { ConfirmSaleDto } from './dto/confirm-sale.dto';
 import { CreateRequestDto } from './dto/create-request.dto';
 import { RequestsService } from './requests.service';
 
@@ -84,8 +85,9 @@ export class RequestsController {
       newBuyPrice?: number;
       newSellPrice?: number;
     }[],
+    @Req() req: RequestWithUser,
   ) {
-    return this.service.updateItemStatuses(id, items);
+    return this.service.updateItemStatuses(id, items, req.user);
   }
 
   // Endpoint for Storekeeper to Dispatch specific quantities (shop→store only)
@@ -108,5 +110,17 @@ export class RequestsController {
     @Req() req: RequestWithUser,
   ) {
     return this.service.confirmReceipt(id, dto.items, req.user);
+  }
+
+  // Shopkeeper: confirm receipt AND sell the goods directly to a customer
+  // (creates a sale linked to the request).
+  @Post(':id/confirm-sale')
+  @Permissions('requests.confirm', 'sales.create')
+  confirmReceiptAndSell(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ConfirmSaleDto,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.service.confirmReceiptAndSell(id, dto, req.user);
   }
 }

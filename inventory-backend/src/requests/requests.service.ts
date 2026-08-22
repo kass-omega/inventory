@@ -8,13 +8,16 @@ import { RequestItemStatus, RequestStatus, RequestType } from '@prisma/client';
 import { JwtPayload } from '../common/interfaces/jwt-payload.interface';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SalesService } from '../sales/sales.service';
 import { CreateRequestDto } from './dto/create-request.dto';
+import { ConfirmSaleDto } from './dto/confirm-sale.dto';
 
 @Injectable()
 export class RequestsService {
   constructor(
     private prisma: PrismaService,
     private notifications: NotificationsService,
+    private sales: SalesService,
   ) {}
 
   async createRequest(dto: CreateRequestDto, user: JwtPayload) {
@@ -78,6 +81,14 @@ export class RequestsService {
         fromStore: true,
       },
     }).then(async (req) => {
+      await this.prisma.requestActivity.create({
+        data: {
+          requestId: req.id,
+          action: 'CREATED',
+          actorId: user.sub,
+          details: `${req.items.length} item(s) requested`,
+        },
+      });
       await this.notifications.notifyOwner(
         'New Stock Request',
         `Request #${req.id}: ${req.items.length} items from ${isStorekeeper ? 'Store' : req.shop?.name}`,
@@ -204,6 +215,13 @@ export class RequestsService {
           },
         },
       });
+      await this.createActivity(
+        tx,
+        id,
+        'EDITED',
+        user.sub,
+        'Items revised — request back to pending',
+      );
     });
 
     await this.notifications.notifyOwner(
@@ -278,6 +296,13 @@ export class RequestsService {
         where: { id: requestId },
         data: { status: RequestStatus.PENDING },
       });
+      await this.createActivity(
+        tx,
+        requestId,
+        'SENT_BACK',
+        user.sub,
+        'Sent back to the creator to re-arrange quantities',
+      );
     });
 
     const creatorLocationId =
@@ -385,55 +410,91 @@ export class RequestsService {
     },
     user: JwtPayload,
   ) {
-    const where: any = {};
+    // Order by status priority (action-needed first) then oldest first — the
+    // ranking is computed in the database so the list arrives pre-sorted.
+    const conditions: string[] = [];
+    const values: any[] = [];
 
     if (user.locationId) {
       if (user.locationType === 'SHOP') {
-        where.shopId = user.locationId;
+        conditions.push(`"shopId" = $${values.length + 1}`);
       } else {
-        where.storeId = user.locationId;
+        conditions.push(`"storeId" = $${values.length + 1}`);
       }
-    } else {
-      if (filters.locationId) {
-        where.OR = [
-          { shopId: Number(filters.locationId) },
-          { storeId: Number(filters.locationId) },
-        ];
-      }
+      values.push(user.locationId);
+    } else if (filters.locationId) {
+      conditions.push(
+        `("shopId" = $${values.length + 1} OR "storeId" = $${values.length + 2})`,
+      );
+      values.push(Number(filters.locationId), Number(filters.locationId));
     }
 
     if (filters.status) {
-      where.status = filters.status;
+      conditions.push(`"status" = $${values.length + 1}`);
+      values.push(filters.status);
     }
     if (filters.startDate && filters.endDate) {
-      where.createdAt = {
-        gte: new Date(filters.startDate),
-        lte: new Date(filters.endDate),
-      };
+      conditions.push(`"createdAt" >= $${values.length + 1}`);
+      values.push(new Date(filters.startDate));
+      conditions.push(`"createdAt" <= $${values.length + 1}`);
+      values.push(new Date(filters.endDate));
     }
     if (filters.categoryId || filters.productId) {
-      where.items = {
-        some: {
-          ...(filters.productId
-            ? { productId: Number(filters.productId) }
-            : {}),
-          ...(filters.categoryId
-            ? { product: { categoryId: Number(filters.categoryId) } }
-            : {}),
-        },
-      };
+      const sub: string[] = [];
+      if (filters.productId) {
+        sub.push(`ri."productId" = $${values.length + 1}`);
+        values.push(Number(filters.productId));
+      }
+      if (filters.categoryId) {
+        sub.push(`p."categoryId" = $${values.length + 1}`);
+        values.push(Number(filters.categoryId));
+      }
+      conditions.push(
+        `EXISTS (SELECT 1 FROM "RequestItem" ri JOIN "Product" p ON p.id = ri."productId" WHERE ri."requestId" = "StockRequest".id AND ${sub.join(' AND ')})`,
+      );
     }
 
-    const requests = await this.prisma.stockRequest.findMany({
-      where,
-      include: {
-        items: { include: { product: true } },
-        shop: true,
-        store: true,
-        fromStore: true,
-      },
-    });
-    return this.attachCreatedByNames(requests);
+    const whereSql = conditions.length
+      ? `WHERE ${conditions.join(' AND ')}`
+      : '';
+
+    const ranked = await this.prisma.$queryRawUnsafe<{ id: number }[]>(
+      `SELECT id FROM "StockRequest"
+       ${whereSql}
+       ORDER BY CASE "status"
+         WHEN 'PENDING' THEN 0
+         WHEN 'PARTIALLY_APPROVED' THEN 1
+         WHEN 'AWAITING_CONFIRMATION' THEN 2
+         WHEN 'APPROVED' THEN 3
+         WHEN 'PARTIALLY_DISPATCHED' THEN 4
+         WHEN 'COMPLETED' THEN 5
+         WHEN 'REJECTED' THEN 6
+         WHEN 'CLOSED' THEN 7
+         ELSE 8 END ASC,
+         "createdAt" ASC`,
+      ...values,
+    );
+    const orderedIds = ranked.map((r) => r.id);
+
+    const requests = orderedIds.length
+      ? await this.prisma.stockRequest.findMany({
+          where: { id: { in: orderedIds } },
+          include: {
+            items: { include: { product: true } },
+            shop: true,
+            store: true,
+            fromStore: true,
+          },
+        })
+      : [];
+
+    // Restore the DB-computed order (Prisma doesn't preserve `in` ordering).
+    const byId = new Map(requests.map((r) => [r.id, r]));
+    const ordered = orderedIds
+      .map((id) => byId.get(id))
+      .filter((r): r is NonNullable<typeof r> => Boolean(r));
+
+    return this.attachCreatedByNames(ordered);
   }
 
   /** Attach the request creator's display name and whether they're the owner. */
@@ -464,6 +525,40 @@ export class RequestsService {
     });
   }
 
+  /** Record a status-change event on the request timeline. */
+  private async createActivity(
+    tx: any,
+    requestId: number,
+    action: string,
+    actorId: number,
+    details?: string,
+  ) {
+    await tx.requestActivity.create({
+      data: { requestId, action, actorId, details },
+    });
+  }
+
+  /** Resolve actor display names for a request's activity timeline. */
+  private async attachActivityActors(req: {
+    activities: { actorId: number; [k: string]: any }[];
+  }) {
+    const userIds = [...new Set(req.activities.map((a) => a.actorId))];
+    const users = userIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const nameById = new Map(users.map((u) => [u.id, u.name]));
+    return {
+      ...req,
+      activities: req.activities.map((a) => ({
+        ...a,
+        actorName: nameById.get(a.actorId) ?? null,
+      })),
+    };
+  }
+
   async findOne(id: number) {
     const req = await this.prisma.stockRequest.findUnique({
       where: { id },
@@ -472,10 +567,12 @@ export class RequestsService {
         shop: true,
         store: true,
         fromStore: true,
+        activities: { orderBy: { createdAt: 'asc' } },
       },
     });
     if (!req) throw new NotFoundException('Request not found');
-    return (await this.attachCreatedByNames([req]))[0];
+    const withCreator = (await this.attachCreatedByNames([req]))[0];
+    return this.attachActivityActors(withCreator);
   }
 
   // --- Helper: re-evaluate overall request status ---
@@ -491,7 +588,8 @@ export class RequestsService {
       (i: any) =>
         i.status === RequestItemStatus.RECEIVED ||
         i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
-        i.status === RequestItemStatus.REJECTED,
+        i.status === RequestItemStatus.REJECTED ||
+        i.status === RequestItemStatus.SOLD,
     );
     const allRejected = items.every(
       (i: any) => i.status === RequestItemStatus.REJECTED,
@@ -515,7 +613,8 @@ export class RequestsService {
         i.status === RequestItemStatus.STORED ||
         i.status === RequestItemStatus.RECEIVED ||
         i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
-        i.status === RequestItemStatus.REJECTED,
+        i.status === RequestItemStatus.REJECTED ||
+        i.status === RequestItemStatus.SOLD,
     );
     const allDispatchedOrBeyond = items.every(
       (i: any) =>
@@ -523,7 +622,8 @@ export class RequestsService {
         i.status === RequestItemStatus.STORED ||
         i.status === RequestItemStatus.RECEIVED ||
         i.status === RequestItemStatus.PARTIALLY_RECEIVED ||
-        i.status === RequestItemStatus.REJECTED,
+        i.status === RequestItemStatus.REJECTED ||
+        i.status === RequestItemStatus.SOLD,
     );
 
     if (allDispatchedOrBeyond && someDispatchedOrStored)
@@ -547,6 +647,7 @@ export class RequestsService {
       newBuyPrice?: number;
       newSellPrice?: number;
     }[],
+    user: JwtPayload,
   ) {
     const request = await this.prisma.stockRequest.findUnique({
       where: { id: requestId },
@@ -637,6 +738,34 @@ export class RequestsService {
         data: { status: newStatus },
       });
 
+      const storedCount = itemUpdates.filter(
+        (u) => u.status === RequestItemStatus.STORED,
+      ).length;
+      const approvedCount = itemUpdates.filter(
+        (u) => u.status === RequestItemStatus.APPROVED,
+      ).length;
+      const rejectedCount = itemUpdates.filter(
+        (u) => u.status === RequestItemStatus.REJECTED,
+      ).length;
+      const details = [
+        storedCount ? `${storedCount} stored` : '',
+        approvedCount ? `${approvedCount} approved` : '',
+        rejectedCount ? `${rejectedCount} rejected` : '',
+      ]
+        .filter(Boolean)
+        .join(', ');
+      await this.createActivity(
+        tx,
+        requestId,
+        newStatus === RequestStatus.REJECTED
+          ? 'REJECTED'
+          : isStoreToOwner
+            ? 'STORED'
+            : 'APPROVED',
+        user.sub,
+        details || 'Owner action',
+      );
+
       // Notify based on what happened
       if (isStoreToOwner) {
         // Notify storekeeper that owner has acted
@@ -716,7 +845,9 @@ export class RequestsService {
         const item = request.items.find((i) => i.id === data.id);
         if (!item) throw new BadRequestException('Invalid item in dispatch data');
         if (item.status !== RequestItemStatus.APPROVED) {
-          throw new BadRequestException(`Item is not approved for dispatch`);
+          // Skip items that weren't approved (partial approvals) instead of
+          // aborting the whole dispatch.
+          continue;
         }
 
         const storeInventory = await tx.inventory.findUnique({
@@ -737,6 +868,17 @@ export class RequestsService {
         });
       }
       const newStatus = await this.evaluateRequestStatus(tx, requestId);
+      const dispatchedUnits = dispatchData.reduce(
+        (sum, d) => sum + (d.quantityDispatched || 0),
+        0,
+      );
+      await this.createActivity(
+        tx,
+        requestId,
+        'DISPATCHED',
+        user.sub,
+        `Dispatched ${dispatchedUnits} unit(s)`,
+      );
       return tx.stockRequest.update({ where: { id: requestId }, data: { status: newStatus } });
     });
 
@@ -901,6 +1043,17 @@ export class RequestsService {
         }
       }
 
+      const receivedTotal = items.reduce(
+        (sum, it) => sum + (it.quantityReceived ?? 0),
+        0,
+      );
+      await this.createActivity(
+        tx,
+        requestId,
+        'CONFIRMED',
+        user.sub,
+        `Confirmed receipt of ${receivedTotal} unit(s)`,
+      );
       const newStatus = await this.evaluateRequestStatus(tx, requestId);
       const result = await tx.stockRequest.update({ where: { id: requestId }, data: { status: newStatus } });
 
@@ -938,5 +1091,156 @@ export class RequestsService {
     }
 
     return txResult;
+  }
+
+  // Shopkeeper confirms receipt AND sells the goods directly to a customer.
+  // The dispatched goods enter the shop's inventory (normal confirm), then a
+  // normal sale is recorded against that stock in the same transaction, and the
+  // request items are marked SOLD (request closes).
+  async confirmReceiptAndSell(
+    requestId: number,
+    dto: ConfirmSaleDto,
+    user: JwtPayload,
+  ) {
+    const request = await this.prisma.stockRequest.findUnique({
+      where: { id: requestId },
+      include: { items: { include: { product: true } } },
+    });
+    if (!request) throw new NotFoundException('Request not found');
+    if (request.requestType !== RequestType.SHOP_TO_STORE) {
+      throw new BadRequestException(
+        'Direct sale on receipt is only for shop-to-store requests',
+      );
+    }
+    if (request.status === RequestStatus.CLOSED) {
+      throw new BadRequestException('Request is already closed');
+    }
+    if (request.shopId === null) {
+      throw new BadRequestException('Request has no shop destination');
+    }
+    if (!dto.items || dto.items.length === 0) {
+      throw new BadRequestException('No items to sell');
+    }
+    const shopId: number = request.shopId;
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Confirm receipt (store −, shop +) and mark items SOLD.
+      const saleItemInputs: {
+        productId: number;
+        quantity: number;
+        customPrice?: number;
+      }[] = [];
+
+      for (const sold of dto.items) {
+        const item = request.items.find((i) => i.id === sold.id);
+        if (!item) {
+          throw new BadRequestException('Invalid item in sale data');
+        }
+        if (item.status !== RequestItemStatus.DISPATCHED) {
+          throw new BadRequestException(
+            `${item.product?.brand ?? ''} ${item.product?.baseName ?? ''} is not ready for confirmation`,
+          );
+        }
+        const qty = sold.quantity ?? item.quantityDispatched ?? 0;
+        if (qty <= 0) {
+          throw new BadRequestException('Quantity must be greater than zero');
+        }
+
+        // Source (store) loses the goods.
+        const storeInv = await tx.inventory.findUnique({
+          where: {
+            productId_locationId: {
+              productId: item.productId,
+              locationId: request.storeId,
+            },
+          },
+        });
+        if (!storeInv || storeInv.quantity < qty) {
+          throw new BadRequestException(
+            `Insufficient stock for ${item.product?.brand ?? ''} ${item.product?.baseName ?? ''}`,
+          );
+        }
+        await tx.inventory.update({
+          where: { id: storeInv.id },
+          data: { quantity: { decrement: qty } },
+        });
+
+        // Destination (shop) receives the goods.
+        await tx.inventory.upsert({
+          where: {
+            productId_locationId: {
+              productId: item.productId,
+              locationId: shopId,
+            },
+          },
+          update: { quantity: { increment: qty } },
+          create: {
+            productId: item.productId,
+            locationId: shopId,
+            quantity: qty,
+          },
+        });
+
+        // Mark the item SOLD.
+        await tx.requestItem.update({
+          where: { id: item.id },
+          data: {
+            status: RequestItemStatus.SOLD,
+            quantityReceived: qty,
+            confirmedById: user.sub,
+            confirmedAt: new Date(),
+          },
+        });
+
+        saleItemInputs.push({
+          productId: item.productId,
+          quantity: qty,
+          ...(sold.unitSellPrice != null
+            ? { customPrice: sold.unitSellPrice }
+            : {}),
+        });
+      }
+
+      // 2. Create the normal sale (deducts from the shop inventory that was
+      // just added) and link it back to this request.
+      const sale = await this.sales.createSale(
+        {
+          shopId,
+          items: saleItemInputs,
+          saleType: dto.saleType,
+          paidAmount: dto.paidAmount,
+          paymentMethodId: dto.paymentMethodId,
+          customerId: dto.customerId,
+          notes: dto.notes ?? `Direct sale from request #${requestId}`,
+        },
+        user,
+        { tx, requestId },
+      );
+
+      // 3. Close the request (SOLD counts as terminal).
+      const newStatus = await this.evaluateRequestStatus(tx, requestId);
+      await tx.stockRequest.update({
+        where: { id: requestId },
+        data: { status: newStatus },
+      });
+
+      await this.createActivity(
+        tx,
+        requestId,
+        'SOLD_ON_RECEIPT',
+        user.sub,
+        `Sale #${sale.invoiceNumber} — ${saleItemInputs.length} item(s) sold directly`,
+      );
+
+      await tx.auditLog.create({
+        data: {
+          userId: user.sub,
+          action: 'SALE_ON_RECEIPT',
+          details: `Request #${requestId}: confirmed receipt and sold ${saleItemInputs.length} item(s) as sale #${sale.invoiceNumber}`,
+        },
+      });
+
+      return { requestId, sale };
+    });
   }
 }

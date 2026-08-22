@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../common/interfaces/jwt-payload.interface';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -25,14 +26,18 @@ export class SalesService {
     private notifications: NotificationsService,
   ) {}
 
-  async createSale(dto: CreateSaleDto, user: JwtPayload) {
+  async createSale(
+    dto: CreateSaleDto,
+    user: JwtPayload,
+    opts: { tx?: Prisma.TransactionClient; requestId?: number } = {},
+  ) {
     // Owner must select a shop; shopkeepers use their own location
     const shopId = user.locationId ?? dto.shopId;
     if (!shopId) throw new BadRequestException('Shop location is required');
 
     const saleType = (dto.saleType ?? 'FULLY_PAID') as any;
 
-    return this.prisma.$transaction(async (tx) => {
+    const run = async (tx: Prisma.TransactionClient) => {
       let totalAmount = 0;
       let totalCost = 0;
 
@@ -117,6 +122,7 @@ export class SalesService {
           paymentMethodId: dto.paymentMethodId ?? null,
           customerId: dto.customerId ?? null,
           notes: dto.notes ?? null,
+          requestId: opts.requestId ?? null,
           items: { create: saleItemsData },
         },
       });
@@ -149,7 +155,10 @@ export class SalesService {
       }
 
       return sale;
-    });
+    };
+
+    if (opts.tx) return run(opts.tx);
+    return this.prisma.$transaction(run);
   }
 
   findAll(user: JwtPayload) {

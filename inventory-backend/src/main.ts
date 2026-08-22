@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
@@ -29,7 +30,12 @@ async function bootstrap() {
     );
   }
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Trust the load balancer / proxy hop (Render) so rate limiting keys each
+  // client's real IP (via X-Forwarded-For) instead of lumping every device
+  // into one shared bucket behind the proxy.
+  app.set('trust proxy', 1);
 
   app.useGlobalPipes(
     new ValidationPipe({
