@@ -7,7 +7,7 @@ import { useState } from "react";
 
 interface DemoAccount {
   email: string;
-  role: "Owner" | "Storekeeper" | "Shopkeeper";
+  role: "Owner" | "Storekeeper" | "Shopkeeper" | "Standalone Shop";
 }
 
 const DEMO_ACCOUNTS: DemoAccount[] = [
@@ -17,6 +17,7 @@ const DEMO_ACCOUNTS: DemoAccount[] = [
   { email: "shopkeeper1@inventory.com", role: "Shopkeeper" },
   { email: "shopkeeper2@inventory.com", role: "Shopkeeper" },
   { email: "shopkeeper3@inventory.com", role: "Shopkeeper" },
+  { email: "standalone@inventory.com", role: "Standalone Shop" },
 ];
 
 const DEMO_PASSWORD = "password123";
@@ -65,6 +66,8 @@ export default function LoginPage() {
         return "bg-blue-100 text-blue-700 border-blue-200";
       case "Shopkeeper":
         return "bg-green-100 text-green-700 border-green-200";
+      case "Standalone Shop":
+        return "bg-amber-100 text-amber-700 border-amber-200";
       default:
         return "bg-gray-100 text-gray-700 border-gray-200";
     }

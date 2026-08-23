@@ -83,4 +83,21 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     'credits.manage',
     'reports.view',
   ],
+  // Standalone shop: the shop restocks its own inventory (owner approves via
+  // restock.create + requests.confirm) and registers sales directly. No
+  // store-to-shop flow — deliberately no requests.create/approve/dispatch.
+  STANDALONE_SHOPKEEPER: [
+    'dashboard.view',
+    'products.view',
+    'sales.view',
+    'sales.create',
+    'sales.edit',
+    'sales.return',
+    'restock.create',
+    'requests.view',
+    'requests.confirm',
+    'credits.view',
+    'credits.manage',
+    'reports.view',
+  ],
 };

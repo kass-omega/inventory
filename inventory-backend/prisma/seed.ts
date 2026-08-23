@@ -68,6 +68,13 @@ async function main() {
   const shopkeeperRole = await prisma.role.create({
     data: { name: 'Shopkeeper', description: 'Runs a shop: sales, purchases, returns' },
   });
+  const standaloneRole = await prisma.role.create({
+    data: {
+      name: 'Standalone Shop',
+      description:
+        'Independent shop: restocks its own inventory (owner approves) and registers sales directly',
+    },
+  });
 
   const linkRolePermissions = async (roleId: number, keys: string[]) => {
     await prisma.rolePermission.createMany({
@@ -78,6 +85,7 @@ async function main() {
   await linkRolePermissions(ownerRole.id, DEFAULT_ROLE_PERMISSIONS.OWNER);
   await linkRolePermissions(storekeeperRole.id, DEFAULT_ROLE_PERMISSIONS.STOREKEEPER);
   await linkRolePermissions(shopkeeperRole.id, DEFAULT_ROLE_PERMISSIONS.SHOPKEEPER);
+  await linkRolePermissions(standaloneRole.id, DEFAULT_ROLE_PERMISSIONS.STANDALONE_SHOPKEEPER);
 
   console.log('🔐 Roles & permissions created.');
 
@@ -108,6 +116,10 @@ async function main() {
   });
   const shop3 = await prisma.location.create({
     data: { name: 'Ummi Branch', type: LocationType.SHOP },
+  });
+  // A shop operated independently of the stores — restocks via owner approval.
+  const standaloneShop = await prisma.location.create({
+    data: { name: 'Standalone Shop', type: LocationType.SHOP },
   });
 
   console.log('📍 Locations created.');
@@ -169,6 +181,16 @@ async function main() {
       name: 'Tigist Haile (Shop 3)',
       roleId: shopkeeperRole.id,
       locationId: shop3.id,
+    },
+  });
+
+  const standaloneKeeper = await prisma.user.create({
+    data: {
+      email: 'standalone@inventory.com',
+      password: hashedPassword,
+      name: 'Meron Girma (Standalone Shop)',
+      roleId: standaloneRole.id,
+      locationId: standaloneShop.id,
     },
   });
 

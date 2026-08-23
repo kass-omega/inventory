@@ -939,8 +939,8 @@ export class RequestsService {
   }
 
   // Receiving party confirms receipt → inventory moves here.
-  // For STORE_TO_OWNER the receiving storekeeper confirms (owner never confirms);
-  // for other types the request creator confirms.
+  // For STORE_TO_OWNER the receiving location user confirms (owner never
+  // confirms); for other types the request creator confirms.
   async confirmReceipt(
     requestId: number,
     items: { id: number; quantityReceived?: number }[],
@@ -948,7 +948,10 @@ export class RequestsService {
   ) {
     const request = await this.prisma.stockRequest.findUnique({
       where: { id: requestId },
-      include: { items: { include: { product: true } } },
+      include: {
+        items: { include: { product: true } },
+        store: true,
+      },
     });
     if (!request) throw new NotFoundException('Request not found');
     if (request.status === RequestStatus.CLOSED) {
@@ -959,8 +962,10 @@ export class RequestsService {
     const isStoreToStore = request.requestType === RequestType.STORE_TO_STORE;
 
     if (isStoreToOwner) {
-      if (user.locationType !== 'STORE' || user.locationId !== request.storeId) {
-        throw new ForbiddenException('Only the receiving storekeeper can confirm receipt');
+      if (user.locationId !== request.storeId) {
+        throw new ForbiddenException(
+          'Only the receiving location user can confirm receipt',
+        );
       }
     } else if (request.createdById !== user.sub) {
       throw new ForbiddenException('Only the request creator can confirm receipt');
@@ -1038,7 +1043,13 @@ export class RequestsService {
           },
         });
 
-        const receiptLabel = isStoreToOwner ? 'Store' : isStoreToStore ? 'Receiving Store' : 'Shop';
+        const receiptLabel = isStoreToOwner
+          ? request.store?.type === 'SHOP'
+            ? 'Shop'
+            : 'Store'
+          : isStoreToStore
+            ? 'Receiving Store'
+            : 'Shop';
         await tx.auditLog.create({
           data: {
             userId: user.sub,
@@ -1322,11 +1333,10 @@ export class RequestsService {
     }
 
     if (request.requestType === RequestType.STORE_TO_OWNER) {
-      const receivingStorekeeper =
-        user.locationType === 'STORE' && user.locationId === request.storeId;
-      if (!user.isSuperuser && !receivingStorekeeper) {
+      const receivingUser = user.locationId === request.storeId;
+      if (!user.isSuperuser && !receivingUser) {
         throw new ForbiddenException(
-          'Only the receiving storekeeper or the owner can close this request',
+          'Only the receiving location user or the owner can close this request',
         );
       }
     } else if (request.createdById !== user.sub && !user.isSuperuser) {

@@ -489,7 +489,8 @@ export default function RequestsPage() {
   const canConfirmReceipt = (req: any) => {
     if (!req) return false;
     if (req.requestType === "STORE_TO_OWNER") {
-      return user?.locationType === "STORE" && user?.locationId === req.storeId;
+      // Receiving location user (storekeeper OR shop employee) confirms.
+      return user?.locationId === req.storeId;
     }
     return req.createdById === user?.id;
   };
@@ -652,6 +653,9 @@ export default function RequestsPage() {
   // Direction labels for the From/To columns and the type badge. From = the
   // origin (an owner-created restock shows the Owner as origin), To = the
   // destination.
+  // A standalone-shop restock reuses the STORE_TO_OWNER pipeline with the shop
+  // as the receiving location — label it as Shop rather than Store.
+  const isShopTarget = (r: any) => r.store?.type === "SHOP";
   const fromLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
       ? r.createdByIsOwner
@@ -673,8 +677,12 @@ export default function RequestsPage() {
   const typeLabel = (r: any) =>
     r.requestType === "STORE_TO_OWNER"
       ? r.createdByIsOwner
-        ? "Owner → Store"
-        : "Store → Owner"
+        ? isShopTarget(r)
+          ? "Owner → Shop"
+          : "Owner → Store"
+        : isShopTarget(r)
+          ? "Shop → Owner"
+          : "Store → Owner"
       : r.requestType === "STORE_TO_STORE"
         ? "Store → Store"
         : "Shop → Store";
@@ -694,12 +702,15 @@ export default function RequestsPage() {
           ? "Next: source store to finish dispatch"
           : "Next: store to dispatch remaining";
       case "AWAITING_CONFIRMATION":
-      case "COMPLETED":
         return r.requestType === "STORE_TO_OWNER"
-          ? "Next: store to confirm receipt"
+          ? isShopTarget(r)
+            ? "Next: shop to confirm receipt"
+            : "Next: store to confirm receipt"
           : r.requestType === "STORE_TO_STORE"
             ? "Next: receiving store to confirm receipt"
             : "Next: shop to confirm receipt";
+      case "COMPLETED":
+        return "Completed";
       case "PARTIALLY_RECEIVED":
         return r.requestType === "STORE_TO_OWNER"
           ? "Next: owner to store remaining"
@@ -729,7 +740,9 @@ export default function RequestsPage() {
             ? "Next: source store to dispatch"
             : "Next: store to dispatch";
       case "STORED":
-        return "Next: store to confirm receipt";
+        return isShopTarget(r)
+          ? "Next: shop to confirm receipt"
+          : "Next: store to confirm receipt";
       case "DISPATCHED":
         return r.requestType === "STORE_TO_STORE"
           ? "Next: receiving store to confirm"
@@ -1427,7 +1440,7 @@ export default function RequestsPage() {
                   }}
                   className="bg-purple-600 text-white px-4 py-2 rounded-lg flex-1"
                 >
-                  Save Store Actions
+                  Save Approval Actions
                 </button>
               )}
             {user?.locationType === "STORE" &&

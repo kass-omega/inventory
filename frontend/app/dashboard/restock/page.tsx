@@ -13,8 +13,12 @@ export default function RestockPage() {
   const { user } = useAuth();
   const toast = useToast();
   const isOwner = user?.isSuperuser === true;
-  const myStoreId =
-    user?.locationType === "STORE" ? String(user.locationId ?? "") : "";
+  // Non-owners (storekeepers or shop employees) restock their own location;
+  // the backend enforces this too.
+  const myLocationId =
+    user?.locationType === "STORE" || user?.locationType === "SHOP"
+      ? String(user.locationId ?? "")
+      : "";
 
   const [products, setProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
@@ -48,15 +52,12 @@ export default function RestockPage() {
 
   useEffect(() => {
     fetchProducts();
-    api
-      .get("/locations")
-      .then((res) =>
-        setStores(res.data.filter((l: any) => l.type === "STORE")),
-      );
+    // Both STORE and SHOP locations are valid restock targets.
+    api.get("/locations").then((res) => setStores(res.data));
     api.get("/categories").then((res) => setCategories(res.data));
   }, [search, categoryFilter]);
 
-  const myStore = stores.find((s: any) => s.id === Number(myStoreId));
+  const myLocation = stores.find((s: any) => s.id === Number(myLocationId));
 
   const handleProductChange = (id: string) => {
     const p = products.find((p: any) => p.id === Number(id));
@@ -83,8 +84,8 @@ export default function RestockPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      // Non-owner users restock their own store (backend enforces this too).
-      const storeId = isOwner ? Number(form.storeId) : Number(myStoreId);
+      // Non-owner users restock their own location (backend enforces this too).
+      const storeId = isOwner ? Number(form.storeId) : Number(myLocationId);
       const payload: any = {
         productId: Number(form.productId),
         storeId,
@@ -95,11 +96,12 @@ export default function RestockPage() {
         payload.newBuyPrice = form.newBuyPrice;
         payload.newSellPrice = form.newSellPrice;
       }
-      await api.post("/restock", payload);
+      const res = await api.post("/restock", payload);
       toast.success(
-        isOwner
-          ? "Restock submitted — pending storekeeper confirmation."
-          : "Restock submitted — awaiting owner approval.",
+        res.data?.message ??
+          (isOwner
+            ? "Restock submitted — pending receiver confirmation."
+            : "Restock submitted — awaiting owner approval."),
       );
       setForm({
         productId: "",
@@ -130,9 +132,9 @@ export default function RestockPage() {
 
       {!isOwner && (
         <p className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4">
-          Restocking for your store ({myStore?.name ?? "your store"}). The owner
-          must approve the request first — you'll confirm receipt once the stock
-          is stored.
+          Restocking for your store/shop ({myLocation?.name ?? "your location"}).
+          The owner must approve the request first — you'll confirm receipt once
+          the stock is deposited.
         </p>
       )}
 
@@ -189,22 +191,22 @@ export default function RestockPage() {
 
         <div>
           <label className="block text-sm font-medium text-gray-500 mb-1">
-            Store Location
+            Target Location
           </label>
           {isOwner ? (
             <SearchableSelect
               options={stores.map((s: any) => ({
                 value: String(s.id),
-                label: s.name,
+                label: `${s.name} (${s.type === "SHOP" ? "Shop" : "Store"})`,
               }))}
               value={form.storeId}
               onChange={(v) => setForm({ ...form, storeId: v })}
-              placeholder="Search store..."
+              placeholder="Search location..."
               required
             />
           ) : (
             <div className="border border-gray-200 bg-gray-50 p-2 rounded-lg text-sm text-gray-700">
-              {myStore?.name ?? "Your store"}
+              {myLocation?.name ?? "Your location"}
             </div>
           )}
         </div>
